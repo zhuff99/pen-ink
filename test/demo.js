@@ -73,6 +73,66 @@
       return add(el, { kind: 'pen', geom: 'ellipse', width: 2.5, opacity: 1, rough: 1, seed: 11, pts, ...extra });
     };
 
+    if (q.has('anim')) return animate(+q.get('f') || 0);
+
+    // README GIF: frame f of a short "someone marks up the note" clip. Each frame is rendered
+    // by its own headless page load, so this just draws every stroke as far as frame f gets.
+    async function animate(f) {
+      Object.assign(plugin.prefs, { tool: 'hl', barVertical: true, barPos: null, syncTipShown: true, favorites: [] });
+      plugin.prefs.hl.color = '#ffd400';
+      plugin.prefs.pen.color = '#e03131';
+      await plugin.toggle(view);
+      const prog = (a, b) => Math.max(0, Math.min(1, (f - a) / (b - a)));
+      const upTo = (pts, t) => pts.slice(0, Math.max(2, Math.round(pts.length * t)));
+      let tip = null;
+      const stroke = (el, a, b, pts, style) => {
+        if (f < a) return;
+        const shown = upTo(pts, prog(a, b));
+        add(el, { ...style, pts: shown.map(p => local(el, p[0], p[1])) });
+        if (f <= b) tip = shown[shown.length - 1];
+      };
+
+      // 1. Highlight a phrase (frames 3-12).
+      const hl = find('light energy into chemical energy'), hr = hl.rects[0], hy = hr.top + hr.height / 2;
+      const hpts = []; for (let i = 0; i <= 30; i++) hpts.push([hr.left - 2 + (hr.width + 4) * i / 30, hy]);
+      if (f >= 3) { const e = upTo(hpts, prog(3, 12)), end = e[e.length - 1]; add(hl.el, { kind: 'hl', color: '#ffd400', width: 20, opacity: 0.4, pts: [hpts[0], end].map(p => local(hl.el, p[0], p[1])) }); if (f <= 12) tip = end; }
+
+      // 2. Switch to the red pen and loop around a word (frames 15-28).
+      if (f >= 14) plugin.prefs.tool = 'pen';
+      const ru = find('RuBisCO'), rr = ru.rects[0], cx = (rr.left + rr.right) / 2, cy = rr.top + rr.height / 2;
+      const cpts = [];
+      for (let i = 0; i <= 60; i++) {
+        const a = Math.PI * 0.95 + (i / 60) * Math.PI * 2.18, k = 1 + 0.05 * Math.sin(a * 2.5) + i * 0.0012;
+        cpts.push([cx + (rr.width / 2 + 15) * k * Math.cos(a) + i * 0.08, cy + (rr.height / 2 + 9) * k * Math.sin(a) - i * 0.03]);
+      }
+      stroke(ru.el, 15, 28, cpts, { kind: 'pen', color: '#e03131', width: 2.6, opacity: 1 });
+
+      // 3. Orange pen: an arrow from "from water" up to "oxygen is released" (frames 32-47).
+      if (f >= 30) plugin.prefs.pen.color = '#f08c00';
+      const rem = find('oxygen we breathe comes from water'), w1 = find('oxygen is released').rects[0], w2 = find('from water').rects[0];
+      const x0 = w2.right + 12, y0 = w2.top + 2, x1 = w1.right - 24, y1 = w1.bottom + 6;
+      const mx = (x0 + x1) / 2 + 34, my = (y0 + y1) / 2 + 10, shaft = [];
+      for (let i = 0; i <= 40; i++) { const t = i / 40, u = 1 - t; shaft.push([u * u * x0 + 2 * u * t * mx + t * t * x1, u * u * y0 + 2 * u * t * my + t * t * y1]); }
+      const ang = Math.atan2(y1 - shaft[36][1], x1 - shaft[36][0]);
+      const wing = (s) => { const w = []; for (let i = 0; i <= 8; i++) w.push([x1 - 17 * (i / 8) * Math.cos(ang + s), y1 - 17 * (i / 8) * Math.sin(ang + s)]); return w; };
+      const orange = { kind: 'pen', color: '#f08c00', width: 2.6, opacity: 1 };
+      stroke(rem.el, 32, 42, shaft, orange);
+      stroke(rem.el, 43, 45, wing(Math.PI / 7), orange);
+      stroke(rem.el, 46, 47, wing(-Math.PI / 7), orange);
+
+      plugin.refreshToolbars();
+      if (tip) {
+        const pen = document.createElement('div');
+        pen.innerHTML = '<svg width="22" height="240" viewBox="0 0 22 240"><rect x="2" y="0" width="18" height="192" rx="5" fill="#fbfbfb" stroke="#cfd2d8"/><path d="M2 190 L20 190 L13.5 229 L8.5 229 Z" fill="#f1f2f4" stroke="#cfd2d8"/><path d="M8.5 229 L13.5 229 L11 239 Z" fill="#7d828c"/></svg>';
+        Object.assign(pen.style, { position: 'fixed', left: (tip[0] - 11) + 'px', top: (tip[1] - 239) + 'px', transformOrigin: '11px 239px', transform: 'rotate(26deg)', zIndex: 9999, pointerEvents: 'none', filter: 'drop-shadow(6px 10px 8px rgba(0,0,0,.18))' });
+        document.body.appendChild(pen);
+      }
+      await sleep(300);
+      plugin.sessions.get(view).toolbar.place();
+      await sleep(100);
+      window.__demoDone = true;
+    }
+
     // 1. Highlights on the key ideas.
     highlight('light energy into chemical energy', '#ffd400');
     highlight('thylakoid membranes', '#40c057');
