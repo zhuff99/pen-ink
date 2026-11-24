@@ -1,0 +1,186 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pen Ink harness</title>
+<!-- Fake Obsidian reading view for testing main.js in a normal browser.
+     Open with ?mobile=1 to pretend to be the iPad (mouse won't draw then).
+     Sections are post-processed while DETACHED from the DOM, like Obsidian does. -->
+<script>document.write('<link rel="stylesheet" href="../styles.css?t=' + Date.now() + '">');</script>
+<style>
+  body { margin: 0; font: 16px/1.5 -apple-system, system-ui, sans-serif; background: var(--background-primary); color: var(--text-normal); }
+  body.theme-light { --background-primary: #fff; --background-secondary: #f6f6f6; --background-modifier-border: #ddd; --background-modifier-hover: #eee; --interactive-accent: #7c5cff; --text-normal: #222; --text-muted: #777; --text-faint: #999; --accent-h: 254; --accent-s: 100%; --accent-l: 68%; }
+  body.theme-dark { --background-primary: #1e1e1e; --background-secondary: #262626; --background-modifier-border: #444; --background-modifier-hover: #333; --interactive-accent: #a48bff; --text-normal: #ddd; --text-muted: #999; --text-faint: #777; --accent-h: 254; --accent-s: 100%; --accent-l: 77%; }
+  .view-header { display: flex; gap: 8px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--background-modifier-border); }
+  .view-header .title { flex: 1; font-weight: 600; }
+  /* Like Obsidian: the positioned ancestor is the whole leaf (header + content), not .view-content. */
+  /* ...and that pane sits right of a sidebar and below a tab bar, so it's NOT at the page origin. */
+  .workspace { display: flex; height: 100vh; }
+  .sidebar { flex: none; width: 90px; background: var(--background-secondary); border-right: 1px solid var(--background-modifier-border); }
+  .workspace-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .tab-bar { flex: none; height: 30px; background: var(--background-secondary); border-bottom: 1px solid var(--background-modifier-border); }
+  .workspace-leaf-content { position: relative; flex: 1; min-height: 0; }
+  /* GPU-layer hint, like app containers often have. It quietly makes .view-content the
+     containing block for absolutely positioned children, but offsetParent still reports the leaf. */
+  .view-content { height: calc(100vh - 76px); will-change: transform; }
+  .markdown-reading-view { height: 100%; }
+  .markdown-preview-view { height: 100%; overflow-y: auto; padding: 0 32px; box-sizing: border-box; }
+  .markdown-preview-section { max-width: 700px; margin: 0 auto; padding-bottom: 200px; }
+  .markdown-preview-section > div > * { margin: 0 0 16px; }
+  pre { background: var(--background-secondary); padding: 12px; border-radius: 6px; }
+  .clickable-icon { cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+  .clickable-icon.is-active { background: var(--interactive-accent); color: #fff; }
+  /* Stand-in for Obsidian's own (mobile) button styles, made loud on purpose:
+     Pen Ink's buttons must look the same despite these. */
+  body.is-mobile button:not(.clickable-icon) { background: #f00; color: #00f; padding: 20px; height: 60px; width: 90px; border-radius: 0; box-shadow: 0 0 0 3px #0f0; font-size: 30px; }
+</style>
+</head>
+<body class="theme-light is-mobile">
+<div class="workspace">
+<div class="sidebar"></div>
+<div class="workspace-main">
+<div class="tab-bar"></div>
+<div class="workspace-leaf-content">
+<div class="view-header">
+  <span class="title">Long test note.md</span>
+  <span class="actions"></span>
+  <button id="theme">theme</button>
+</div>
+<div class="view-content">
+  <div class="markdown-reading-view">
+    <div class="markdown-preview-view"><div class="markdown-preview-section"></div></div>
+  </div>
+</div>
+</div>
+</div>
+</div>
+
+<script>document.write('<script src="mock-obsidian.js?t=' + Date.now() + '"><\/script>');</script>
+<script>
+  // Obsidian adds these to the DOM; plain browsers don't have them.
+  window.activeDocument = document;
+  window.activeWindow = window;
+  for (const proto of [HTMLElement.prototype, SVGElement.prototype]) {
+    proto.setCssStyles = function (styles) { Object.assign(this.style, styles); };
+    proto.setCssProps = function (props) { for (const k in props) this.style.setProperty(k, props[k]); };
+  }
+</script>
+<script>
+  // main.js expects CommonJS `require('obsidian')` and `module.exports`.
+  var module = { exports: {} };
+  function require(name) { if (name === 'obsidian') return mockObsidian; throw new Error('unexpected require ' + name); }
+  if (/mobile=1/.test(location.search)) mockObsidian.Platform.isMobile = true;
+</script>
+<script>
+  // Cache-bust so edits to main.js always show up on reload.
+  document.write('<script src="../main.js?t=' + Date.now() + '"><\/script>');
+  document.write('<script src="harness-tests.js?t=' + Date.now() + '"><\/script>');
+</script>
+<script>
+(async function () {
+  const O = mockObsidian;
+  const NOTE = 'Folder/Long test note.md';
+
+  // --- Build a long note: 40 paragraphs + a code block + a list ---
+  const blocks = [];
+  for (let i = 1; i <= 40; i++) {
+    if (i === 12) blocks.push('```\ncode block line one\ncode block line two\n```');
+    else if (i === 20) blocks.push('- list item A\n- list item B\n- list item C');
+    else if (i % 10 === 0) blocks.push('## Heading ' + i);
+    else blocks.push('Paragraph ' + i + '. The quick brown fox jumps over the lazy dog, then reads a few more words so the line wraps nicely across the page width.');
+  }
+  const text = blocks.join('\n\n');
+  const lines = text.split('\n');
+
+  // --- In-memory vault adapter ---
+  const files = new Map(), folders = new Set();
+  const vaultHandlers = {};
+  // Just enough of the Vault API, backed by the in-memory `files` map.
+  const vaultApi = {
+    getAbstractFileByPath: (p) => files.has(p) ? new O.TFile(p) : folders.has(p) ? new O.TFolder(p) : null,
+    read: async (f) => { if (!files.has(f.path)) throw new Error('ENOENT ' + f.path); return files.get(f.path); },
+    modify: async (f, d) => { files.set(f.path, d); },
+    create: async (p, d) => { if (files.has(p)) throw new Error('exists ' + p); files.set(p, d); return new O.TFile(p); },
+    createFolder: async (p) => { folders.add(p); },
+    rename: async (f, to) => { files.set(to, files.get(f.path)); files.delete(f.path); },
+  };
+
+  class FakeView extends O.MarkdownView {
+    constructor() {
+      super();
+      this.contentEl = document.querySelector('.view-content');
+      this.mode = 'preview';
+      this.file = { path: NOTE };
+    }
+    getMode() { return this.mode; }
+    getState() { return { mode: this.mode === 'preview' ? 'preview' : 'source' }; }
+    async setState(s) { this.mode = s.mode === 'preview' ? 'preview' : 'source'; }
+    addAction(icon, title, cb) {
+      const a = document.createElement('span');
+      a.className = 'clickable-icon'; a.title = title;
+      a.innerHTML = O.icons[icon] ? '<svg viewBox="0 0 100 100" width="20" height="20" stroke-width="1.75">' + O.icons[icon] + '</svg>' : icon;
+      a.addEventListener('click', cb);
+      document.querySelector('.view-header .actions').appendChild(a);
+      return a;
+    }
+  }
+  const view = new FakeView();
+  const leaf = { view };
+  let activeHandler = null;
+  const app = {
+    workspace: {
+      getActiveViewOfType: () => view,
+      iterateAllLeaves: (fn) => fn(leaf),
+      onLayoutReady: (fn) => setTimeout(fn, 0),
+      on: () => ({ off() {} }),
+    },
+    vault: {
+      ...vaultApi,
+      on: (name, fn) => { (vaultHandlers[name] = vaultHandlers[name] || []).push(fn); return { off() {} }; },
+    },
+  };
+
+  const PluginClass = module.exports.default || module.exports;
+  const plugin = new PluginClass(app, { id: 'pen-ink', version: 'test' });
+  await plugin.load();
+
+  // --- "Render" the note like Obsidian: post-process each section while detached, then attach ---
+  const renderer = new O.Component(); renderer.load();
+  const sectionHost = document.querySelector('.markdown-preview-section');
+  let line = 0;
+  function render() {
+    sectionHost.replaceChildren();
+    line = 0;
+    for (const b of blocks) {
+      const n = b.split('\n').length;
+      const info = { text, lineStart: line, lineEnd: line + n - 1 };
+      line += n + 1;
+      const el = document.createElement('div');
+      if (b.startsWith('```')) el.innerHTML = '<pre><code>' + b.split('\n').slice(1, -1).join('\n') + '</code></pre>';
+      else if (b.startsWith('- ')) el.innerHTML = '<ul>' + b.split('\n').map(l => '<li>' + l.slice(2) + '</li>').join('') + '</ul>';
+      else if (b.startsWith('## ')) el.innerHTML = '<h2>' + b.slice(3) + '</h2>';
+      else el.innerHTML = '<p>' + b + ' <a href="#" onclick="window.__linkClicks=(window.__linkClicks||0)+1;return false">a link</a></p>';
+      const ctx = {
+        sourcePath: NOTE,
+        getSectionInfo: (e) => (e === el ? info : null),
+        addChild: (c) => renderer.addChild(c),
+      };
+      for (const pp of plugin.postProcessors) pp(el, ctx);   // detached!
+      sectionHost.appendChild(el);
+    }
+  }
+  render();
+
+  document.getElementById('theme').onclick = () => {
+    document.body.classList.toggle('theme-light');
+    document.body.classList.toggle('theme-dark');
+  };
+
+  // Hooks for scripted tests
+  window.__pi = { plugin, view, app, files, render, vaultHandlers, NOTE, O };
+  window.__ready = true;
+})().catch((e) => { document.body.insertAdjacentHTML('afterbegin', '<pre style="color:red">' + e.stack + '</pre>'); window.__error = e; });
+</script>
+</body>
+</html>
