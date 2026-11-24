@@ -1,0 +1,52 @@
+# What's new in Pen Ink
+
+Newest first. Updates arrive through **Settings → Community plugins → Check for updates**.
+
+## 1.14.0
+
+**New**
+
+- **Resize and rotate.** In Select, drag a corner to resize a drawing (it keeps its proportions and its lines thicken
+  or thin with it), or turn it with the round knob under the selection. It settles on 0°, 45°, 90° and so on when
+  you're close.
+- **Copy, cut and paste ink**, within a note or into another one. Copy is in the selection menu; a Paste button
+  appears in the toolbar while there's something to paste. On a Mac, Cmd/Ctrl + C, X and V work too.
+- **Four new shapes:** diamond, pentagon, hexagon and star, with fill, sketchy lines and round corners like the rest.
+- **Pen eraser end and side button.** With an S Pen, Surface or Wacom pen, the eraser end or a held side button
+  erases without switching tools.
+- **Export to PDF and printing keep your ink.** The toolbar and selection box stay off the page.
+
+**Fixed**
+
+- Saving now merges ink changed on another device instead of overwriting it, and never saves over an ink file that's
+  still syncing.
+- Ink that syncs in while a note is already open now shows up.
+- Undo and redo only affect the note you're in.
+- Two identical paragraphs (like two `---` lines) no longer share the same ink.
+- Highlights no longer disappear when you export or print from the dark theme.
+- Renaming a note right after drawing keeps its ink together.
+- Updating or turning the plugin off and on no longer leaves open notes where new strokes don't stick.
+- The selection's opacity slider can no longer change a drawing you've already deselected.
+
+## 1.12.2
+
+- You can start drawing anywhere on a note, including over the title and the Properties area at the top.
+- Smoother sketchy rounded shapes.
+- The selection's Style card moves beside the selection when there's no room above or below it.
+
+## 1.12.1
+
+First release in the community plugin directory.
+
+- Fingers scroll and pinch to zoom reliably while marking up, including right after a zoom.
+
+## Before the first release
+
+- **Pinch to zoom** while marking up, up to 4×, with ink always saved at its real size.
+- **Excalidraw-style shapes:** rectangle, ellipse, triangle, line and arrow, with fill, sloppiness, round edges and
+  opacity, plus restyle, duplicate and layer order for selections.
+- **Dashed and dotted lines, a laser pointer**, and support for pens beyond the Apple Pencil.
+- **Select**: loop around ink to move, recolor or delete it.
+- **Fountain pen, smoothing, hold to straighten, favorites** and a smarter eraser with a partial mode.
+- **A movable toolbar** that docks as a column or a row.
+- Long strokes stay fast, circles are truly round, and the ink folder is a setting.

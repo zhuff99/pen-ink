@@ -15,6 +15,9 @@ and is saved in its own file, so the Markdown underneath stays exactly as you wr
 
 It's made for the iPad and Apple Pencil, and it works just as well with a mouse or another pen on desktop.
 
+**New in 1.14:** resize and rotate, copy and paste between notes, four new shapes, and safer syncing.
+[See what's new](https://github.com/zhuff99/pen-ink/blob/main/CHANGELOG.md)
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/zhuff99/pen-ink/main/assets/demo.gif" alt="Highlighting a phrase, circling a word and drawing an arrow on a note" width="820">
 </p>
@@ -116,9 +119,9 @@ note to reading view for you.
 <details>
 <summary><b>My Pencil strokes turn into typed text, or a scribble deletes something</b></summary>
 
-That's iPadOS **Scribble**, which turns handwriting in text fields into typing. Pen Ink draws in reading view, where
-there's no text field, so Scribble normally stays out of the way. If it ever interferes (for example with a theme or
-another plugin that makes the note editable), turn it off in **iPad Settings → Apple Pencil → Scribble**.
+That's iPadOS **Scribble**, which turns handwriting into typing. Pen Ink draws in reading view, where there's no text
+to type into, so it usually stays out of the way. If it does grab your Pencil, turn it off in
+**iPad Settings → Apple Pencil → Scribble**.
 </details>
 
 <details>
