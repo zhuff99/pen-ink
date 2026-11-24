@@ -8,7 +8,8 @@
    styles (which are quite specific on mobile) can't override the toolbar's look.
    ========================================================================== */
 
-.pa-hidden { display: none !important; }
+/* Hidden. The two :not(#…) give it more weight than any display rule below (no "important" flag needed). */
+.pa-hidden:not(#pa-x):not(#pa-y) { display: none; }
 
 /* ----- ink on the page ----- */
 

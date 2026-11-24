@@ -862,6 +862,23 @@
       sc.scrollTop = top0;
     }
 
+    // ===== drawing can start anywhere, even over the title / Properties block =====
+    {
+      const sc = view.contentEl.querySelector('.markdown-preview-view');
+      sc.scrollTop = 0; await sleep(80);
+      const props = document.querySelector('.metadata-container'), pr = props.getBoundingClientRect();
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 0;
+      const n0 = plugin.undoStack.length, y = pr.top + pr.height / 2, x0 = pr.left + 120, x1 = pr.left + 320;
+      fire('pointerdown', x0, y); fire('pointermove', (x0 + x1) / 2, y); fire('pointermove', x1, y); fire('pointerup', x1, y);
+      const a = plugin.undoStack[plugin.undoStack.length - 1];
+      check('a stroke can start over the Properties block', plugin.undoStack.length === n0 + 1 && a.type === 'add');
+      const el = [...document.querySelectorAll('[data-pa-key]')].find(e => e.dataset.paKey === a.key);
+      const path = [...el.querySelectorAll('.pa-layer-ink path')].pop(), r = path.getBoundingClientRect();
+      check('…and it shows exactly where it was drawn', Math.abs((r.left + r.right) / 2 - (x0 + x1) / 2) < 1.5 && Math.abs((r.top + r.bottom) / 2 - y) < 1.5, [(r.left + r.right) / 2, (r.top + r.bottom) / 2, (x0 + x1) / 2, y]);
+      plugin.undoLast();
+      plugin.prefs.smoothing = 30;
+    }
+
     // 11. Done removes the toolbar.
     bar().querySelector('[aria-label="Done"]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
     check('done closes annotation mode', !bar() && !plugin.sessions.has(view));

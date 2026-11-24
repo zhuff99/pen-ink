@@ -76,6 +76,7 @@
   // Cache-bust so edits to main.js always show up on reload.
   document.write('<script src="../main.js?t=' + Date.now() + '"><\/script>');
   document.write('<script src="harness-tests.js?t=' + Date.now() + '"><\/script>');
+  if (/demo/.test(location.search)) document.write('<script src="demo.js?t=' + Date.now() + '"><\/script>');
 </script>
 <script>
 (async function () {
@@ -83,8 +84,10 @@
   const NOTE = 'Folder/Long test note.md';
 
   // --- Build a long note: 40 paragraphs + a code block + a list ---
+  const DEMO = /demo/.test(location.search);
   const blocks = [];
-  for (let i = 1; i <= 40; i++) {
+  if (DEMO) blocks.push(...window.DEMO_BLOCKS);
+  else for (let i = 1; i <= 40; i++) {
     if (i === 12) blocks.push('```\ncode block line one\ncode block line two\n```');
     else if (i === 20) blocks.push('- list item A\n- list item B\n- list item C');
     else if (i % 10 === 0) blocks.push('## Heading ' + i);
@@ -151,6 +154,8 @@
   let line = 0;
   function render() {
     sectionHost.replaceChildren();
+    // Like Obsidian's title + Properties block: tall, at the top, and NOT a markdown section.
+    if (!DEMO) sectionHost.insertAdjacentHTML('beforeend', '<div class="metadata-container" style="height:260px;border-bottom:1px solid var(--background-modifier-border)"><h1>Long test note</h1><p>tags: one two three</p></div>');
     line = 0;
     for (const b of blocks) {
       const n = b.split('\n').length;
@@ -160,6 +165,8 @@
       if (b.startsWith('```')) el.innerHTML = '<pre><code>' + b.split('\n').slice(1, -1).join('\n') + '</code></pre>';
       else if (b.startsWith('- ')) el.innerHTML = '<ul>' + b.split('\n').map(l => '<li>' + l.slice(2) + '</li>').join('') + '</ul>';
       else if (b.startsWith('## ')) el.innerHTML = '<h2>' + b.slice(3) + '</h2>';
+      else if (b.startsWith('# ')) el.innerHTML = '<h1>' + b.slice(2) + '</h1>';
+      else if (DEMO) el.innerHTML = '<p>' + b + '</p>';
       else el.innerHTML = '<p>' + b + ' <a href="#" onclick="window.__linkClicks=(window.__linkClicks||0)+1;return false">a link</a></p>';
       const ctx = {
         sourcePath: NOTE,

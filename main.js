@@ -239,6 +239,22 @@ function catmull(Q, closed) {
   return d;
 }
 
+// Evenly spaced points along a polyline, `step` px apart. Smooth splines through unevenly spaced
+// points (dense in rounded corners, sparse along the sides) overshoot past the corners.
+function resample(P, step) {
+  const out = [P[0]];
+  let acc = 0;                                   // distance since the last point we kept
+  for (let i = 1; i < P.length; i++) {
+    const a = P[i - 1], b = P[i], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    let pos = step - acc;
+    while (pos <= L) { const t = pos / L; out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]); pos += step; }
+    acc = L - (pos - step);
+  }
+  const last = P[P.length - 1], end = out[out.length - 1];
+  if (Math.hypot(last[0] - end[0], last[1] - end[1]) > step / 3) out.push(last);
+  return out;
+}
+
 // Center and radii of a full (un-erased) ellipse shape, from its outline points. Else null.
 function ellipseOf(s, P) {
   if (s.geom !== 'ellipse' || P.length < 60 || !isClosed(P)) return null;
@@ -284,9 +300,8 @@ function roughData(P, level, seed, width, closed, straight) {
       }
     } else {
       // Rounded shapes and partly erased ellipses: a smooth wobbly spline through the outline.
-      const base = closed ? P.slice(0, -1) : P, step = Math.max(1, Math.round(base.length / 24)), Q = [];
-      for (let i = 0; i < base.length; i += step) Q.push([base[i][0] + j(0.8), base[i][1] + j(0.8)]);
-      if (!closed) Q.push([P[P.length - 1][0] + j(0.6), P[P.length - 1][1] + j(0.6)]);
+      const even = resample(P, 16), base = closed ? even.slice(0, -1) : even, Q = [];
+      for (const p of base) Q.push([p[0] + j(0.8), p[1] + j(0.8)]);
       d += ` M${fmt(Q[0])}` + catmull(Q, closed) + (closed ? ' Z' : '');
     }
   }
@@ -928,7 +943,10 @@ class PenInk extends Plugin {
     return [...root.querySelectorAll('.markdown-preview-view [data-pa-key]')].filter(el => el.paChild && el.getBoundingClientRect().height);
   }
 
-  // The section under the pointer (or the nearest one within 80px, for the gaps between blocks).
+  // The section under the pointer, or else the nearest one. Ink can start anywhere: over the
+  // title, the Properties block or blank space (none of which are markdown sections), it's
+  // attached to the closest paragraph and drawn where it was put. (It used to need a section
+  // within 80px, so the top few inches of a note with Properties couldn't be drawn on.)
   sectionAt(root, x, y) {
     let best = null, bestDist = Infinity;
     for (const el of this.sections(root)) {
@@ -937,7 +955,7 @@ class PenInk extends Plugin {
       const d = Math.min(Math.abs(y - r.top), Math.abs(y - r.bottom));
       if (d < bestDist) { bestDist = d; best = el; }
     }
-    return bestDist < 80 ? best : null;
+    return best;
   }
 
   async toggle(view) { this.sessions.has(view) ? this.stop(view) : await this.start(view); }
@@ -2186,12 +2204,17 @@ class PenInk extends Plugin {
       css(selMenu, { maxWidth: (rr.width - 8) + 'px' });
       placeAt(selMenu, mx, my);
       if (selCardOpen()) {
-        // The style card goes under the menu, or above it if there's no room.
+        // The style card goes under the menu, or above it. If neither fits, beside the selection
+        // (right, else left), so it never covers the menu.
         const mr = selMenu.getBoundingClientRect(), cw = selCard.offsetWidth, ch = selCard.offsetHeight;
-        let cy = mr.bottom + 6;
-        if (cy + ch > rr.bottom - 4) cy = Math.max(rr.top + 4, mr.top - ch - 6);
-        const cx = Math.max(rr.left + 4, Math.min(mr.left, rr.right - cw - 4));
-        placeAt(selCard, cx, cy);
+        const top = Math.max(rr.top + 4, Math.min(rect.top, rr.bottom - ch - 4));
+        let cx, cy;
+        if (mr.bottom + 6 + ch <= rr.bottom - 4) { cy = mr.bottom + 6; cx = mr.left; }
+        else if (mr.top - ch - 6 >= rr.top + 4) { cy = mr.top - ch - 6; cx = mr.left; }
+        else if (rect.right + 8 + cw <= rr.right - 4) { cx = rect.right + 8; cy = top; }
+        else if (rect.left - 8 - cw >= rr.left + 4) { cx = rect.left - 8 - cw; cy = top; }
+        else { cx = mr.left; cy = rr.top + 4; }
+        placeAt(selCard, Math.max(rr.left + 4, Math.min(cx, rr.right - cw - 4)), cy);
       }
     };
 
