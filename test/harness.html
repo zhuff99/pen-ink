@@ -93,8 +93,10 @@
     else if (i % 10 === 0) blocks.push('## Heading ' + i);
     else blocks.push('Paragraph ' + i + '. The quick brown fox jumps over the lazy dog, then reads a few more words so the line wraps nicely across the page width.');
   }
-  if (!DEMO) blocks.push('Same words twice.', 'Same words twice.');   // identical blocks must not share ink
+  if (!DEMO) blocks.push('Same words twice.', 'Same words twice.', '- list item B');   // identical blocks must not share ink; a block equal to a line of an earlier list is still a first
   const text = blocks.join('\n\n');
+  // Obsidian's section list for the note (metadataCache), one entry per block.
+  const metaSections = []; { let line = 0; for (const blk of blocks) { const n = blk.split('\n').length; metaSections.push({ type: 'paragraph', position: { start: { line }, end: { line: line + n - 1 } } }); line += n + 1; } }
   const lines = text.split('\n');
 
   // --- In-memory vault adapter ---
@@ -139,6 +141,8 @@
       onLayoutReady: (fn) => setTimeout(fn, 0),
       on: () => ({ off() {} }),
     },
+    metadataCache: { getCache: (p) => (p === NOTE ? { sections: metaSections } : null) },
+    fileManager: { trashFile: async (f) => { files.delete(f.path); } },
     vault: {
       ...vaultApi,
       on: (name, fn) => { (vaultHandlers[name] = vaultHandlers[name] || []).push(fn); return { off() {} }; },

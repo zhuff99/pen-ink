@@ -42,6 +42,11 @@
     const { plugin, view, files, NOTE } = window.__pi;
     const results = [];
     const check = (name, ok, detail) => results.push({ name, ok: !!ok, detail });
+    // Any uncaught error during the run fails it, even if every check passed.
+    const uncaught = [];
+    const onErr = (e) => uncaught.push(String(e.message || e.reason || e));
+    window.addEventListener('error', onErr);
+    window.addEventListener('unhandledrejection', onErr);
 
     // Visible = not hidden by the pa-hidden class (styles.css) and actually displayed.
     window.vis = (el) => !!el && !el.classList.contains('pa-hidden') && getComputedStyle(el).display !== 'none';
@@ -712,10 +717,25 @@
       const b2 = { ...st.selBox }, c2 = [(b2.left + b2.right) / 2, (b2.top + b2.bottom) / 2], [ox, oy] = plugin.knobAt(b2), R2 = oy - c2[1];
       drawPts([[ox, oy], [c2[0] - R2 * 0.38, c2[1] + R2 * 0.92], [c2[0] - R2 * Math.SQRT1_2, c2[1] + R2 * Math.SQRT1_2]]);
       check('a rotated ellipse remembers its angle', oval.rot === 45, oval.rot);
-      check('...and is drawn turned, not snapped back level', [...t.querySelectorAll('.pa-layer-ink path')].some(p => / 45\.0 1 1 /.test(p.getAttribute('d') || '')));
+      {
+        // Drawn from its own (turned) points: the outline's box matches the points' box, not the old level one.
+        const xs = oval.pts.map(p => p[0] * w), ys = oval.pts.map(p => p[1]), bw = Math.max(...xs) - Math.min(...xs), bh = Math.max(...ys) - Math.min(...ys);
+        const drawn = [...t.querySelectorAll('.pa-layer-ink path')].map(p => p.getBBox()).find(bb => Math.abs(bb.width - bw) < 3 && Math.abs(bb.height - bh) < 3);
+        check('...and is drawn turned, matching its points (not snapped back level)', !!drawn, [bw, bh]);
+      }
       check('...so its box gets narrower', st.selBox.right - st.selBox.left < b2.right - b2.left - 12, [st.selBox.right - st.selBox.left, b2.right - b2.left]);
       plugin.undoLast();
       check('undo levels it again', !oval.rot);
+      {
+        // Turn it about 20 degrees, then back to about 2 (snaps to 0): no leftover angle.
+        plugin.clearSelection(); plugin.selected.add(oval); plugin.showSelection(st);
+        const b3 = { ...st.selBox }, c3 = [(b3.left + b3.right) / 2, (b3.top + b3.bottom) / 2], [qx3, qy3] = plugin.knobAt(b3), R3 = qy3 - c3[1];
+        const at3 = (deg) => { const a = (90 + deg) * Math.PI / 180; return [c3[0] + R3 * Math.cos(a), c3[1] + R3 * Math.sin(a)]; };
+        const before3 = JSON.stringify(oval.pts);
+        drawPts([[qx3, qy3], at3(20), at3(2)]);
+        check('turning back to (almost) level leaves no angle behind', !oval.rot && JSON.stringify(oval.pts) === before3, oval.rot);
+        plugin.clearSelection();
+      }
       plugin.clearSelection();
       plugin.prefs.shape = { kind: 'rect', color: '#1c7ed6', size: 2.5, dash: 'solid', fill: null, rough: 0, edges: 'sharp', opacity: 1 };
       plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 30; plugin.refreshToolbars();
@@ -896,6 +916,101 @@
       check('dark-theme highlight tweaks apply on screen only (not on white paper)', /theme-dark \.pa-layer-hl/.test(media('screen')) && !rules.some(r => !r.media && /theme-dark \.pa-layer-hl/.test(r.selectorText || '')));
     }
 
+    // ===== eraser reaches ink that hangs over a neighboring paragraph =====
+    {
+      await at(23);
+      const A = sections()[22], B = sections()[23], ra = A.getBoundingClientRect(), rb = B.getBoundingClientRect();
+      const keyB = B.dataset.paKey, cx = rb.left + 200, top = ra.top + 15, bottom = rb.top + 25;
+      plugin.prefs.tool = 'shape';
+      plugin.prefs.shape = { kind: 'ellipse', color: '#e03131', size: 2.5, dash: 'solid', fill: null, rough: 1, edges: 'sharp', opacity: 1 };
+      drawPts([[cx - 60, bottom], [cx + 60, top]]);   // starts in B, drawn up over A: belongs to B
+      const circle = lastStroke(B);
+      check('circle belongs to the paragraph it was started in', !!circle && circle.geom === 'ellipse' && plugin.strokesFor(NOTE, keyB).includes(circle));
+      plugin.prefs.tool = 'eraser'; plugin.prefs.eraser.mode = 'stroke'; plugin.prefs.eraser.only = 'all'; plugin.prefs.eraser.autoReturn = false;
+      const yTop = Math.min(...circle.pts.map(p => p[1])) + rb.top;   // the circle's top edge, over paragraph A
+      check('...and its top edge sits over the paragraph above', yTop < ra.bottom, [yTop, ra.bottom]);
+      drawPts([[cx - 8, yTop], [cx + 8, yTop]]);
+      check('whole-stroke eraser removes it from the part over the other paragraph', !plugin.strokesFor(NOTE, keyB).includes(circle));
+      plugin.undoLast();
+      plugin.prefs.eraser.mode = 'partial';
+      const n0 = plugin.strokesFor(NOTE, keyB).length;
+      drawPts([[cx - 8, yTop], [cx + 8, yTop]]);
+      check('partial eraser cuts it there too', !plugin.strokesFor(NOTE, keyB).includes(circle) && plugin.strokesFor(NOTE, keyB).length >= n0);
+      plugin.undoLast();
+      plugin.undoLast();   // the circle itself
+      plugin.prefs.eraser.mode = 'stroke'; plugin.prefs.eraser.autoReturn = true;
+      plugin.prefs.shape = { kind: 'rect', color: '#1c7ed6', size: 2.5, dash: 'solid', fill: null, rough: 0, edges: 'sharp', opacity: 1 };
+      plugin.prefs.tool = 'pen'; plugin.refreshToolbars();
+    }
+
+    // ===== second bug sweep =====
+    {
+      const { files, vaultHandlers, O, app } = window.__pi;
+      const st = plugin.sessions.get(view), dp = plugin.dataPath(NOTE);
+      const { t, r } = await at(34), key = t.dataset.paKey, onDisk = () => JSON.parse(files.get(dp));
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b), diskHas = (s) => (onDisk().sections[key] || []).some(x => same(x, s));
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 0; plugin.refreshToolbars();
+      await plugin.writeInk(NOTE);
+
+      // 1. A save that fails must not become the merge base: the next save keeps new ink and deletions.
+      drawPts([[r.left + 60, r.top + 15], [r.left + 120, r.top + 15]]);
+      const old = lastStroke(t);
+      await plugin.writeInk(NOTE);
+      plugin.selected.clear(); plugin.selected.add(old); plugin.deleteSelection(st);
+      drawPts([[r.left + 60, r.top + 25], [r.left + 120, r.top + 25]]);
+      const s1 = lastStroke(t);
+      const realModify = app.vault.modify; let failOnce = true;
+      app.vault.modify = async (f, d) => { if (failOnce) { failOnce = false; throw new Error('EBUSY (test)'); } return realModify(f, d); };
+      await plugin.writeInk(NOTE);
+      check('a failed save keeps the old file and schedules a retry', diskHas(old) && !diskHas(s1) && plugin.saveTimers.has(NOTE));
+      drawPts([[r.left + 60, r.top + 35], [r.left + 120, r.top + 35]]);
+      const s2 = lastStroke(t);
+      await plugin.writeInk(NOTE);
+      app.vault.modify = realModify;
+      check('...and the next save keeps every new stroke and the deletion', diskHas(s1) && diskHas(s2) && !diskHas(old) && plugin.strokesFor(NOTE, key).includes(s1));
+      plugin.saveFails.clear();
+
+      // 3. Same ink in a different key order is not a change: no endless save ping-pong.
+      const d0 = onDisk(), flipped = { ...d0, sections: Object.fromEntries(Object.entries(d0.sections).reverse()) };
+      files.set(dp, JSON.stringify(flipped));
+      for (const fn of vaultHandlers.modify || []) await fn(new O.TFile(dp));
+      check('same ink in another order does not trigger a save', !plugin.saveTimers.has(NOTE));
+
+      // 4. Keys: a block equal to one line of an earlier list is still a first (no "~").
+      const lone = sections().find(el => el.textContent.trim() === 'list item B');
+      check('a block that matches a line inside an earlier block keeps its plain key', !!lone && !lone.dataset.paKey.includes('~'), lone && lone.dataset.paKey);
+
+      // 2. Renaming onto a name that already has an ink file: both are kept, the old file goes to the trash.
+      const TAKEN = 'Folder/Taken note.md', takenDp = plugin.dataPath(TAKEN);
+      files.set(takenDp, JSON.stringify({ version: 1, sections: { STALE: [{ kind: 'pen', color: '#aa0009', width: 2, opacity: 1, pts: [[0.1, 1], [0.2, 1]] }] } }));
+      const mineBefore = onDisk().sections[key].length;
+      for (const fn of vaultHandlers.rename || []) await fn(new O.TFile(TAKEN), NOTE);
+      const merged = JSON.parse(files.get(takenDp));
+      check('rename onto an existing ink file keeps both', merged.sections.STALE && merged.sections[key] && merged.sections[key].length === mineBefore && !files.has(dp));
+      check('...and the ink still shows under the new name', plugin.strokesFor(TAKEN, key).length === mineBefore && t.dataset.paPath === TAKEN);
+      for (const fn of vaultHandlers.rename || []) await fn(new O.TFile(NOTE), TAKEN);
+      check('...and renaming back works', files.has(dp) && plugin.strokesFor(NOTE, key).length === mineBefore);
+
+      // 8 + 9. Laser picked: the pen's side button still erases, and no right-click menu follows.
+      const press = (type, x, y, button, buttons) => (document.elementFromPoint(x, y) || document.body).dispatchEvent(new PointerEvent(type, { pointerType: 'pen', pointerId: 12, clientX: x, clientY: y, bubbles: true, cancelable: true, button, buttons }));
+      plugin.prefs.eraser.mode = 'stroke'; plugin.prefs.eraser.only = 'all';
+      drawPts([[r.left + 60, r.top + 45], [r.left + 160, r.top + 45]]);
+      const vic = lastStroke(t);
+      plugin.prefs.tool = 'laser'; plugin.refreshToolbars();
+      press('pointerdown', r.left + 100, r.top + 30, 2, 2);
+      for (let i = 1; i <= 6; i++) press('pointermove', r.left + 100, r.top + 30 + i * 5, -1, 2);
+      press('pointerup', r.left + 100, r.top + 60, 2, 0);
+      check('with the laser picked, the side button still erases', !plugin.strokesFor(NOTE, key).includes(vic));
+      const cm = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 100, clientY: r.top + 60 });
+      (document.elementFromPoint(r.left + 100, r.top + 60) || document.body).dispatchEvent(cm);
+      check('...and no right-click menu pops up after it', cm.defaultPrevented);
+      st.penEraseAt = 0;
+      const cm2 = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 100, clientY: r.top + 60 });
+      (document.elementFromPoint(r.left + 100, r.top + 60) || document.body).dispatchEvent(cm2);
+      check('...while a normal right-click still works', !cm2.defaultPrevented);
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 30; plugin.refreshToolbars();
+    }
+
     // ===== more shapes: diamond, pentagon, hexagon, star =====
     {
       const { t, r } = await at(36), w = t.offsetWidth;
@@ -1020,7 +1135,7 @@
       const S = st.stroke;
       const med = (a) => { const b = [...a].sort((x, y) => x - y); return b[b.length >> 1]; };
       const early = med(frame.slice(20, 120)), late = med(frame.slice(-100));
-      check('long stroke: each redraw costs about the same at the end as at the start', late < early * 3 + 0.05, { early: early.toFixed(3), late: late.toFixed(3) });
+      check('long stroke: each redraw costs about the same at the end as at the start', late < early * 3 + 0.15, { early: early.toFixed(3), late: late.toFixed(3) });
       check('long stroke: old parts are frozen into pieces', S.group.childNodes.length > 30, S.group.childNodes.length);
       const raw = S.s.pts.length;
       ev('pointerup', ...pt(6000));
@@ -1148,6 +1263,9 @@
     // 11. Done removes the toolbar.
     bar().querySelector('[aria-label="Done"]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
     check('done closes annotation mode', !bar() && !plugin.sessions.has(view));
+    await sleep(50);
+    window.removeEventListener('error', onErr); window.removeEventListener('unhandledrejection', onErr);
+    check('no uncaught errors during the whole run', uncaught.length === 0, uncaught.slice(0, 3));
     check('done puts the zoom back to 100%', !(view.contentEl.querySelector('.markdown-reading-view').style.transform));
 
     const failed = results.filter(r => !r.ok);

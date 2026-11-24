@@ -2,6 +2,23 @@
 
 Newest first. Updates arrive through **Settings → Community plugins → Check for updates**.
 
+## 1.14.1
+
+- The eraser now reaches every part of a drawing. Ink that hung over a neighboring paragraph (like a circle around a
+  word near a paragraph's edge, or ink drawn in blank space) could only be erased from the part over its own
+  paragraph, so some drawings took a lot of scrubbing to remove.
+- Safer saving: if a save fails (for example while a cloud drive has the file locked), Pen Ink retries, and the next
+  save no longer loses the newest strokes.
+- Two devices editing the same note can no longer get stuck re-saving the same ink back and forth.
+- Renaming a note to a name that still had an old ink file keeps both drawings (the old file goes to the trash).
+- Identical-paragraph fix from 1.14.0: the Properties block and lines inside other blocks no longer count, so ink on a
+  horizontal rule or a short paragraph stays where it was drawn.
+- A turned ellipse that's turned back to level no longer stays slightly tilted, and turned ellipses keep their
+  outline and fill lined up on any screen width.
+- With the laser pointer picked, a pen's side button now erases properly, and it no longer opens a right-click menu.
+- Moving a note to a new window while marking up ends the session cleanly.
+- Fixed an error at the start of drawing a sketchy shape with round edges.
+
 ## 1.14.0
 
 **New**

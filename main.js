@@ -77,21 +77,30 @@ function parseInk(raw) {
 
 // Identical blocks (two "---" lines, a repeated heading) would hash to the same key and share
 // one set of ink. The first keeps the plain key (so existing ink stays put); later copies get "~n".
-let offsText = null, offs = null;
-function repeatIndex(info, src) {
-  const text = info.text;
-  if (offsText !== text) {
-    offsText = text; offs = [0];
-    for (let i = 0; i < text.length; i++) if (text[i] === '\n') offs.push(i + 1);
+// Only whole earlier blocks with the same text count (from Obsidian's own section list), never
+// the Properties block or a line inside some other block. No section list: no suffix.
+let repText = null, repSections = null, repStarts = null;
+function repeatIndex(info, src, sections) {
+  if (!sections || !sections.length) return 0;
+  if (repText !== info.text || repSections !== sections) {
+    repText = info.text; repSections = sections; repStarts = new Map();
+    const lines = info.text.split('\n');
+    for (const sec of sections) {
+      if (sec.type === 'yaml' || !sec.position) continue;
+      const a = sec.position.start.line, b = sec.position.end.line;
+      const t = lines.slice(a, b + 1).join('\n').trim();
+      if (!repStarts.has(t)) repStarts.set(t, []);
+      repStarts.get(t).push(a);
+    }
   }
-  const at = offs[info.lineStart] || 0;
-  let n = 0, i = text.indexOf(src);
-  while (i >= 0 && i < at) {
-    const end = i + src.length;
-    if ((i === 0 || text[i - 1] === '\n') && (end === text.length || text[end] === '\n')) n++;
-    i = text.indexOf(src, i + 1);
-  }
-  return n;
+  const starts = repStarts.get(src);
+  return starts ? starts.filter(a => a < info.lineStart).length : 0;
+}
+
+// Ink sections compared by content: same strokes per paragraph, whatever the key order.
+function sameInk(a, b) {
+  const norm = (secs) => JSON.stringify(Object.keys(secs).filter(k => secs[k] && secs[k].length).sort().map(k => [k, secs[k]]));
+  return norm(a) === norm(b);
 }
 
 const isColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
@@ -285,15 +294,9 @@ function resample(P, step) {
 // Center and radii of a full (un-erased) ellipse shape, from its outline points. Else null.
 // A rotated ellipse (s.rot, degrees, set by Select's rotate knob) is measured in its own axes.
 function ellipseOf(s, P) {
-  if (s.geom !== 'ellipse' || P.length < 60 || !isClosed(P)) return null;
-  const rot = s.rot || 0;
-  if (rot) {
-    const Q = P.slice(0, -1), cx = Q.reduce((a, p) => a + p[0], 0) / Q.length, cy = Q.reduce((a, p) => a + p[1], 0) / Q.length;
-    const c = Math.cos(-rot * Math.PI / 180), n = Math.sin(-rot * Math.PI / 180);
-    let rx = 0, ry = 0;
-    for (const p of Q) { const dx = p[0] - cx, dy = p[1] - cy; rx = Math.max(rx, Math.abs(dx * c - dy * n)); ry = Math.max(ry, Math.abs(dx * n + dy * c)); }
-    return { cx, cy, rx, ry, rot };
-  }
+  // A turned ellipse (s.rot, from Select's rotate knob) is drawn from its own points instead, so its
+  // outline always matches its fill and selection, even when the paragraph is a different width.
+  if (s.geom !== 'ellipse' || s.rot || P.length < 60 || !isClosed(P)) return null;
   const xs = P.map(p => p[0]), ys = P.map(p => p[1]);
   const l = Math.min(...xs), r = Math.max(...xs), t = Math.min(...ys), b = Math.max(...ys);
   return { cx: (l + r) / 2, cy: (t + b) / 2, rx: (r - l) / 2, ry: (b - t) / 2, rot: 0 };
@@ -345,6 +348,7 @@ function roughData(P, level, seed, width, closed, straight) {
     } else {
       // Rounded shapes and partly erased ellipses: a smooth wobbly spline through the outline.
       const even = resample(P, 16), base = closed ? even.slice(0, -1) : even, Q = [];
+      if (base.length < 2) { d += ` M${fmt(P[0])} L${fmt(P[P.length - 1])}`; continue; }   // zero-size (a shape's first instant)
       for (const p of base) Q.push([p[0] + j(0.8), p[1] + j(0.8)]);
       d += ` M${fmt(Q[0])}` + catmull(Q, closed) + (closed ? ' Z' : '');
     }
@@ -370,6 +374,7 @@ function geomData(s, w) {
     return `M${a} A${R} 1 1 ${b} A${R} 1 1 ${a} Z`;
   }
   if (E) return roughEllipse(E, s.rough, s.seed || 1, s.width);
+  if (s.geom === 'ellipse' && !s.rough && closed && P.length > 3) return `M${fmt(P[0])}` + catmull(P.slice(0, -1), true) + ' Z';   // turned: smooth through its points
   if (s.rough) return roughData(P, s.rough, s.seed || 1, s.width, closed, !rounded && s.geom !== 'ellipse');
   return 'M' + P.map(fmt).join(' L');
 }
@@ -468,6 +473,19 @@ function distToSegment(px, py, ax, ay, bx, by) {
 
 // Does an eraser of radius r at (x,y) touch stroke s? (Checks the segments, not just the points,
 // so long straight lines with few points still get erased.)
+// A drawing's bounding box in section px, cached until its points or the width change.
+// Lets the eraser skip far-away ink cheaply now that it checks every paragraph's ink.
+const BOXES = new WeakMap();
+function strokeBox(s, w) {
+  const c = BOXES.get(s);
+  if (c && c.pts === s.pts && c.n === s.pts.length && c.w === w) return c.box;
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  for (const p of s.pts) { const x = p[0] * w; if (x < l) l = x; if (x > r) r = x; if (p[1] < t) t = p[1]; if (p[1] > b) b = p[1]; }
+  const box = [l, t, r, b];
+  BOXES.set(s, { pts: s.pts, n: s.pts.length, w, box });
+  return box;
+}
+
 function eraserHits(s, w, x, y, r) {
   const tol = r + s.width / 2, P = s.pts;
   if (P.length === 1) return Math.hypot(P[0][0] * w - x, P[0][1] - y) < tol;
@@ -815,7 +833,8 @@ class PenInk extends Plugin {
     this.inkClip = null;           // copied ink: { w, h, n, strokes } in px from the copied box's top-left
     this.undoStack = [];
     this.redoStack = [];
-    this.saveFails = new Map();    // notePath -> failed attempts to read the ink file before saving
+    this.saveFails = new Map();    // notePath -> failed attempts to read/write the ink file
+    this.writing = new Map();      // notePath -> JSON being written right now
     this.prefsTimer = null;
     this.prefs = mergePrefs(await this.loadData());
 
@@ -826,7 +845,8 @@ class PenInk extends Plugin {
       if (!info || !ctx.sourcePath) return;
       const src = sectionSource(info);
       if (!src) return;
-      const n = repeatIndex(info, src);
+      const meta = this.app.metadataCache && this.app.metadataCache.getCache ? this.app.metadataCache.getCache(ctx.sourcePath) : null;
+      const n = repeatIndex(info, src, meta && meta.sections);
       ctx.addChild(new SectionChild(el, this, ctx.sourcePath, hash(src) + (n ? '~' + n : '')));
     });
 
@@ -887,19 +907,37 @@ class PenInk extends Plugin {
     this.registerEvent(this.app.workspace.on('layout-change', addButtons));
     // A pane that was closed while marking up: end its session (listeners, toolbar, timers).
     this.registerEvent(this.app.workspace.on('layout-change', () => {
-      for (const v of [...this.sessions.keys()]) if (v.containerEl && !v.containerEl.isConnected) this.stop(v);
+      for (const [v, st] of [...this.sessions]) {
+        const c = v.containerEl;
+        if (c && (!c.isConnected || (st.doc && c.ownerDocument !== st.doc))) this.stop(v);   // closed, or moved to another window
+      }
     }));
 
     this.registerEvent(this.app.vault.on('rename', async (file, oldPath) => {
       if (!(file instanceof TFile) || !oldPath.endsWith('.md')) return;
       try {
         if (this.saveTimers.has(oldPath)) await this.writeInk(oldPath);   // save under the old name first
-        const from = this.dataPath(oldPath), to = this.dataPath(file.path), src = this.inkFile(from);
-        if (from !== to && src && !this.inkFile(to)) {
+        const from = this.dataPath(oldPath), to = this.dataPath(file.path), src = this.inkFile(from), dest = this.inkFile(to);
+        if (from !== to && src && !dest) {
           await this.ensureFolder(to);
           await this.app.vault.rename(src, to);
+          for (const m of [this.cache, this.lastWritten]) if (m.has(oldPath)) { m.set(file.path, m.get(oldPath)); m.delete(oldPath); }
+        } else if (from !== to && src && dest) {
+          // An ink file already has the new name (left by a deleted note). Keep both: add this note's
+          // ink to it, then move the old file to the trash (recoverable), never delete it outright.
+          const mine = parseInk(await this.app.vault.read(src)), other = parseInk(await this.app.vault.read(dest));
+          if (!mine || !other) throw new Error('an ink file could not be read; nothing was changed');
+          for (const k of Object.keys(mine.sections)) other.sections[k] = [...(other.sections[k] || []), ...mine.sections[k]];
+          const json = JSON.stringify(other);
+          await this.app.vault.modify(dest, json);
+          if (this.app.fileManager && this.app.fileManager.trashFile) await this.app.fileManager.trashFile(src);
+          this.cache.delete(oldPath); this.lastWritten.delete(oldPath);
+          this.cache.set(file.path, other); this.lastWritten.set(file.path, json);
+          this.forgetHistory(oldPath);
+          this.redraw(file.path);
+        } else {
+          for (const m of [this.cache, this.lastWritten]) if (m.has(oldPath)) { m.set(file.path, m.get(oldPath)); m.delete(oldPath); }
         }
-        for (const m of [this.cache, this.lastWritten]) if (m.has(oldPath)) { m.set(file.path, m.get(oldPath)); m.delete(oldPath); }
         // Rendered paragraphs and undo steps still name the old path.
         for (const el of activeDocument.querySelectorAll('[data-pa-path]')) {
           if (el.dataset.paPath !== oldPath) continue;
@@ -1002,14 +1040,20 @@ class PenInk extends Plugin {
       this.saveFails.delete(notePath);
       for (const k of Object.keys(d.sections)) if (!d.sections[k].length) delete d.sections[k];
       const json = JSON.stringify(d);
-      this.lastWritten.set(notePath, json);
+      // Only what actually reached the disk becomes the merge base (lastWritten). While the write is
+      // in flight, its own modify/create event is recognized through `writing`.
+      this.writing.set(notePath, json);
       const file = this.inkFile(f);
       if (file) await this.app.vault.modify(file, json);
-      else { await this.ensureFolder(f); await this.app.vault.create(f, json); }
+      else { await this.ensureFolder(f); const again = this.inkFile(f); if (again) { this.writing.delete(notePath); this.saveInk(notePath); return; } await this.app.vault.create(f, json); }
+      this.lastWritten.set(notePath, json);
+      this.writing.delete(notePath);
       this.syncTip();
     } catch (e) {
+      this.writing.delete(notePath);
       console.error('Pen Ink: could not save ink for', notePath, e);
-      new Notice('Pen Ink: could not save ink. ' + (e && e.message ? e.message : e));
+      if (!this.saveFails.get(notePath)) new Notice('Pen Ink: could not save ink, trying again. ' + (e && e.message ? e.message : e));
+      this.retrySave(notePath);
     }
   }
 
@@ -1070,14 +1114,14 @@ class PenInk extends Plugin {
     if (!file) return;
     let raw;
     try { raw = await this.app.vault.read(file); } catch (e) { return; }
-    if (raw === this.lastWritten.get(notePath) || this.saveTimers.has(notePath)) return;  // our own write / new local ink
+    if (raw === this.lastWritten.get(notePath) || raw === this.writing.get(notePath) || this.saveTimers.has(notePath)) return;  // our own write / new local ink
     const theirs = parseInk(raw);
     if (!theirs) return;   // half-synced: the next modify event will have all of it
     const d = this.inkData(notePath);
     if (!d) return;
     const merged = this.mergeInk(notePath, d, theirs);
     this.lastWritten.set(notePath, raw);
-    if (JSON.stringify(d.sections) !== JSON.stringify(theirs.sections)) this.saveInk(notePath);   // we had ink they don't
+    if (!sameInk(d.sections, theirs.sections)) this.saveInk(notePath);   // we had ink they don't (order doesn't count)
     if (!merged) return;
     this.forgetHistory(notePath);
     this.redraw(notePath);
@@ -1293,6 +1337,8 @@ class PenInk extends Plugin {
       if (st.stroke || st.eraserId != null || st.lasso || st.moving || st.shape || st.laserId != null) return;   // already busy with another pointer
       const tool = penErase ? 'eraser' : P.tool;
       st.tempErase = penErase && P.tool !== 'eraser';
+      if (penErase) st.penEraseAt = Date.now();
+      st.penErasing = penErase;
 
       if (tool === 'laser') {
         e.preventDefault();
@@ -1330,7 +1376,8 @@ class PenInk extends Plugin {
         st.lastErase = [e.clientX, e.clientY];
         st.eraseBatch = { type: 'batch', items: [] };   // the whole swipe undoes in one go
         showRing(e);
-        this.eraseAt(el, e.clientX, e.clientY, st.eraseBatch);
+        st.eraseEls = this.sections(root);
+        this.eraseNear(st.eraseEls, e.clientX, e.clientY, st.eraseBatch);
         return;
       }
       if (tool === 'shape') { this.startShape(st, el, e); return; }
@@ -1349,7 +1396,7 @@ class PenInk extends Plugin {
       // Eraser ring follows the Pencil (also while hovering, on iPads that support it).
       if ((P.tool === 'eraser' || (st.tempErase && st.eraserId === e.pointerId)) && canDraw(e) && !inToolbar(e)) showRing(e);
       // Laser: the dot follows the Pencil/mouse (also while hovering); a trail while pressed.
-      if (P.tool === 'laser' && canDraw(e) && (!inToolbar(e) || st.laserId === e.pointerId)) {
+      if (P.tool === 'laser' && st.eraserId !== e.pointerId && canDraw(e) && (!inToolbar(e) || st.laserId === e.pointerId)) {
         if (st.laserId === e.pointerId) e.preventDefault();
         this.laserMove(st, e);
         return;
@@ -1371,8 +1418,7 @@ class PenInk extends Plugin {
         const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / Math.max(2, P.eraser.size / 2)));
         for (let i = 1; i <= steps; i++) {
           const x = x0 + (x1 - x0) * i / steps, y = y0 + (y1 - y0) * i / steps;
-          const el = this.sectionAt(root, x, y);
-          if (el) this.eraseAt(el, x, y, st.eraseBatch);
+          this.eraseNear(st.eraseEls || this.sections(root), x, y, st.eraseBatch);
         }
         st.lastErase = [x1, y1];
         return;
@@ -1395,6 +1441,7 @@ class PenInk extends Plugin {
         st.lastPenTime = Date.now();
         if (st.eraseBatch && st.eraseBatch.items.length) this.record(st.eraseBatch);
         st.eraseBatch = null;
+        if (st.penErasing) { st.penEraseAt = Date.now(); st.penErasing = false; }   // the right-click menu comes after the lift
         if (st.tempErase) { st.tempErase = false; hideRing(); return; }   // pen button: the picked tool never changed
         if (P.eraser.autoReturn) { P.tool = P.lastDrawTool; this.savePrefs(); this.refreshToolbars(); }
         return;
@@ -1426,6 +1473,8 @@ class PenInk extends Plugin {
     };
     st.onLeave = (e) => { if (e.pointerType !== 'touch') { hideRing(); if (st.laserId == null) st.laserSeen = 0; } };
     // Swallow the click that follows a pen stroke so links don't open.
+    // A pen's side button counts as a right-click on Windows/Android: no context menu after using it to erase.
+    st.onContext = (e) => { if (Date.now() - (st.penEraseAt || 0) < 1500 || st.eraserId != null) e.preventDefault(); };
     st.onClick = (e) => {
       if (Date.now() - st.lastPenTime < 400 && !inToolbar(e)) { e.preventDefault(); e.stopPropagation(); }
     };
@@ -1445,6 +1494,7 @@ class PenInk extends Plugin {
     st.doc.addEventListener('pointercancel', st.onUp);
     root.addEventListener('pointerleave', st.onLeave);
     root.addEventListener('click', st.onClick, true);
+    root.addEventListener('contextmenu', st.onContext, true);
     root.addEventListener('scroll', st.onScroll, true);
 
     st.toolbar = this.buildToolbar(view, st);
@@ -1472,6 +1522,7 @@ class PenInk extends Plugin {
     (st.doc || activeDocument).removeEventListener('pointercancel', st.onUp);
     r.removeEventListener('pointerleave', st.onLeave);
     r.removeEventListener('click', st.onClick, true);
+    r.removeEventListener('contextmenu', st.onContext, true);
     r.removeEventListener('scroll', st.onScroll, true);
     r.classList.remove('pa-annotating', 'pa-no-cursor', 'pa-zoomed', 'pa-cur-move', 'pa-cur-rotate', 'pa-cur-nwse', 'pa-cur-nesw');
     if (st.zoomEl) { css(st.zoomEl, { transform: '' }); st.zoomEl.classList.remove('pa-zoom-target'); }   // back to 100%
@@ -1756,6 +1807,13 @@ class PenInk extends Plugin {
 
   // ----- erasing -----------------------------------------------------------------
 
+  // Erase at a screen point. Ink belongs to a paragraph but can reach well outside it (a circle
+  // around a word near the edge, ink drawn in blank space or over the title), so every rendered
+  // paragraph's ink is checked, not just the one under the eraser. `els` is that list for the swipe.
+  eraseNear(els, cx, cy, batch) {
+    for (const el of els) if (el.isConnected && el.paChild) this.eraseAt(el, cx, cy, batch);
+  }
+
   eraseAt(el, cx, cy, batch) {
     const r = frameOf(el);
     const x = (cx - r.left) / r.s, y = (cy - r.top) / r.s;
@@ -1766,6 +1824,8 @@ class PenInk extends Plugin {
     for (let i = list.length - 1; i >= 0; i--) {
       const s = list[i];
       if ((E.only === 'pen' && isHighlight(s)) || (E.only === 'hl' && !isHighlight(s))) continue;
+      const bx = strokeBox(s, r.width), pad = radius + s.width / 2;
+      if (x < bx[0] - pad || x > bx[2] + pad || y < bx[1] - pad || y > bx[3] + pad) continue;   // nowhere near
       let action;
       if (partial) {
         const news = cutStroke(s, r.width, x, y, radius);
@@ -1938,7 +1998,7 @@ class PenInk extends Plugin {
           return q;
         });
         if (k !== 1) it.s.width = +Math.max(0.5, it.bw * k).toFixed(2);       // lines thicken/thin with the drawing
-        if (deg && it.s.geom === 'ellipse') {
+        if (M.mode === 'rotate' && it.s.geom === 'ellipse') {
           const r = (((it.brot || 0) + deg) % 360 + 360) % 360;
           if (r) it.s.rot = +r.toFixed(1); else delete it.s.rot;
         }
