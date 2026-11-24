@@ -667,6 +667,272 @@
       plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 30; plugin.refreshToolbars();
     }
 
+    // ===== Select: resize from a corner, rotate with the knob =====
+    {
+      const { t, r } = await at(27);
+      const st = plugin.sessions.get(view), w = t.offsetWidth;
+      const end = (s) => [(s.pts[s.pts.length - 1][0] - s.pts[0][0]) * w, s.pts[s.pts.length - 1][1] - s.pts[0][1]];
+      const len = (s) => Math.hypot(...end(s));
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 0;
+      drawPts([[r.left + 60, r.top + 30], [r.left + 110, r.top + 30], [r.left + 160, r.top + 30]]);
+      const line = lastStroke(t);
+      plugin.prefs.tool = 'shape';
+      plugin.prefs.shape = { kind: 'ellipse', color: '#e03131', size: 2.5, dash: 'solid', fill: null, rough: 0, edges: 'sharp', opacity: 1 };
+      drawPts([[r.left + 200, r.top + 10], [r.left + 300, r.top + 50]]);
+      const oval = lastStroke(t);
+      plugin.prefs.tool = 'lasso'; plugin.refreshToolbars();
+      plugin.clearSelection(); plugin.selected.add(line); plugin.showSelection(st);
+      const b0 = { ...st.selBox }, [kx, ky] = plugin.knobAt(b0);
+      check('selection shows 4 resize handles and a rotate knob', document.querySelectorAll('.pa-selbox .pa-handle').length === 4 && vis(document.querySelector('.pa-selbox .pa-knob')));
+      const kr = document.querySelector('.pa-selbox .pa-knob').getBoundingClientRect();
+      check('the knob is drawn where it is grabbed', Math.abs(kr.left + kr.width / 2 - kx) < 1.5 && Math.abs(kr.top + kr.height / 2 - ky) < 1.5, [kr.left + kr.width / 2, kx, kr.top + kr.height / 2, ky]);
+      const hits = [plugin.handleAt(st, b0.right + 4, b0.bottom + 4), plugin.handleAt(st, b0.left - 3, b0.top - 3), plugin.handleAt(st, kx, ky),
+        plugin.handleAt(st, (b0.left + b0.right) / 2, (b0.top + b0.bottom) / 2), plugin.handleAt(st, b0.right + 60, b0.top - 60)];
+      check('corners, knob, inside and outside are told apart', hits.join() === 'se,nw,rotate,move,', [hits.join(), b0]);
+      check('a thin selection can still be moved from near its ends', plugin.handleAt(st, b0.left + 12, (b0.top + b0.bottom) / 2) === 'move');
+
+      // Resize: drag the bottom-right corner out to twice the size; the top-left corner stays put.
+      const l0 = len(line), w0 = line.width, x0 = line.pts[0][0];
+      drawPts([[b0.right, b0.bottom], [(3 * b0.right - b0.left) / 2, (3 * b0.bottom - b0.top) / 2], [2 * b0.right - b0.left, 2 * b0.bottom - b0.top]]);
+      check('dragging a corner resizes the drawing', Math.abs(len(line) - 2 * l0) < 1.5, [len(line), l0]);
+      check('...from the opposite corner, and the line thickens with it', line.pts[0][0] > x0 && Math.abs(line.width - 2 * w0) < 0.01, [line.width, w0]);
+      plugin.undoLast();
+      check('undo restores the size and width', Math.abs(len(line) - l0) < 0.5 && line.width === w0);
+
+      // Rotate: the knob starts straight below the center; dragging it round to the left is a quarter turn.
+      plugin.showSelection(st);
+      const b1 = { ...st.selBox }, c1 = [(b1.left + b1.right) / 2, (b1.top + b1.bottom) / 2], [qx, qy] = plugin.knobAt(b1), R1 = qy - c1[1];
+      drawPts([[qx, qy], [c1[0] - R1 * 0.7, c1[1] + R1 * 0.7], [c1[0] - R1, c1[1] + 1]]);
+      check('the knob rotates, snapping to a quarter turn', Math.abs(end(line)[0]) < 0.6 && Math.abs(Math.abs(end(line)[1]) - l0) < 1, end(line));
+      plugin.undoLast();
+      check('undo turns it back', Math.abs(end(line)[1]) < 0.5);
+
+      // A rotated ellipse keeps its angle (it used to be redrawn level from its bounding box).
+      plugin.clearSelection(); plugin.selected.add(oval); plugin.showSelection(st);
+      const b2 = { ...st.selBox }, c2 = [(b2.left + b2.right) / 2, (b2.top + b2.bottom) / 2], [ox, oy] = plugin.knobAt(b2), R2 = oy - c2[1];
+      drawPts([[ox, oy], [c2[0] - R2 * 0.38, c2[1] + R2 * 0.92], [c2[0] - R2 * Math.SQRT1_2, c2[1] + R2 * Math.SQRT1_2]]);
+      check('a rotated ellipse remembers its angle', oval.rot === 45, oval.rot);
+      check('...and is drawn turned, not snapped back level', [...t.querySelectorAll('.pa-layer-ink path')].some(p => / 45\.0 1 1 /.test(p.getAttribute('d') || '')));
+      check('...so its box gets narrower', st.selBox.right - st.selBox.left < b2.right - b2.left - 12, [st.selBox.right - st.selBox.left, b2.right - b2.left]);
+      plugin.undoLast();
+      check('undo levels it again', !oval.rot);
+      plugin.clearSelection();
+      plugin.prefs.shape = { kind: 'rect', color: '#1c7ed6', size: 2.5, dash: 'solid', fill: null, rough: 0, edges: 'sharp', opacity: 1 };
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 30; plugin.refreshToolbars();
+    }
+
+    // ===== copy and paste ink =====
+    {
+      const tapEl = (el) => el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      const key = (k, extra = {}) => { const { target, ...o } = extra; const ev = new KeyboardEvent('keydown', { key: k, metaKey: true, bubbles: true, cancelable: true, ...o }); (target || document.body).dispatchEvent(ev); return ev; };
+      const st = plugin.sessions.get(view), all = () => Object.values(plugin.inkData(NOTE).sections).reduce((a, l) => a + l.length, 0);
+      const { t, r } = await at(30);
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 0;
+      drawPts([[r.left + 60, r.top + 20], [r.left + 100, r.top + 20], [r.left + 140, r.top + 20]]);
+      const line = lastStroke(t);
+      plugin.prefs.tool = 'shape'; plugin.prefs.shape = { kind: 'ellipse', color: '#e03131', size: 2.5, dash: 'solid', fill: null, rough: 1, edges: 'sharp', opacity: 1 };
+      drawPts([[r.left + 160, r.top + 5], [r.left + 220, r.top + 45]]);
+      const oval = lastStroke(t);
+      plugin.prefs.tool = 'lasso'; plugin.refreshToolbars();
+      plugin.clearSelection(); plugin.selected.add(line); plugin.selected.add(oval); plugin.showSelection(st);
+      const pasteBtn = () => bar().querySelector('[aria-label="Paste ink"]');
+      plugin.inkClip = null; plugin.refreshToolbars();
+      check('no Paste button until something is copied', !vis(pasteBtn()));
+      tapEl(document.querySelector('.pa-selmenu [aria-label="Copy"]'));
+      check('Copy keeps both drawings and shows Paste', !!plugin.inkClip && plugin.inkClip.strokes.length === 2 && vis(pasteBtn()));
+
+      // Paste somewhere else in the note: lands mid-screen, same size, selected, with Select on.
+      const n0 = all();
+      await at(38);
+      plugin.prefs.tool = 'pen'; plugin.refreshToolbars();
+      tapEl(pasteBtn());
+      const pasted = [...plugin.selected], pl = pasted.find(s => !s.geom), po = pasted.find(s => s.geom);
+      const w = (s) => { for (const el of sections()) if (plugin.strokesFor(NOTE, el.dataset.paKey).includes(s)) return el.offsetWidth; };
+      const lenOf = (s) => (s.pts[s.pts.length - 1][0] - s.pts[0][0]) * w(s);
+      check('Paste adds the copies and selects them', all() === n0 + 2 && pasted.length === 2 && !!pl && !!po && !pasted.includes(line));
+      check('...switches to Select so they can be dragged', plugin.prefs.tool === 'lasso');
+      check('...at the same size', Math.abs(lenOf(pl) - lenOf(line)) < 0.6 && pl.width === line.width, [lenOf(pl), lenOf(line)]);
+      check('...with a fresh sketch seed', po.rough === 1 && po.seed !== oval.seed);
+      const box = st.selBox, root = st.root.getBoundingClientRect(), mid = (root.top + root.bottom) / 2;
+      check('...in the middle of the screen', box.top < mid && box.bottom > mid, [box.top, box.bottom, mid]);
+      check('...attached to a paragraph there, not the original one', !plugin.strokesFor(NOTE, t.dataset.paKey).includes(pl));
+      const b1 = { ...st.selBox };
+      tapEl(pasteBtn());
+      check('pasting again nudges the copy down-right', all() === n0 + 4 && Math.abs(st.selBox.left - b1.left - 16) < 1 && Math.abs(st.selBox.top - b1.top - 16) < 1, [st.selBox.left - b1.left, st.selBox.top - b1.top]);
+      plugin.undoLast(); plugin.undoLast();
+      check('undo removes pasted ink', all() === n0);
+
+      // Keyboard: Cmd+X cuts, Cmd+V pastes, but never while typing in a field.
+      plugin.clearSelection(); plugin.selected.add(line); plugin.showSelection(st);
+      const ex = key('x');
+      check('Cmd+X cuts the selection', ex.defaultPrevented && !plugin.strokesFor(NOTE, t.dataset.paKey).includes(line) && plugin.inkClip.strokes.length === 1);
+      const input = document.createElement('input'); document.body.appendChild(input); input.focus();
+      const n1 = all(), ev = key('v', { target: input });
+      check('Cmd+V in a text field is left alone', !ev.defaultPrevented && all() === n1);
+      input.remove();
+      const ev2 = key('v');
+      check('Cmd+V pastes', ev2.defaultPrevented && all() === n1 + 1);
+      plugin.clearSelection();
+      const ev3 = key('c');
+      check('Cmd+C with nothing selected does nothing (normal copy still works)', !ev3.defaultPrevented);
+      plugin.undoLast(); plugin.undoLast();
+      check('undo brings the cut ink back', plugin.strokesFor(NOTE, t.dataset.paKey).includes(line));
+      plugin.inkClip = null; plugin.clearSelection();
+      plugin.prefs.shape = { kind: 'rect', color: '#1c7ed6', size: 2.5, dash: 'solid', fill: null, rough: 0, edges: 'sharp', opacity: 1 };
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 30; plugin.refreshToolbars();
+    }
+
+    // ===== bug sweep: sync safety, per-note undo, identical paragraphs, stale previews, renames =====
+    {
+      const { files, vaultHandlers, O } = window.__pi;
+      const st = plugin.sessions.get(view), dp = plugin.dataPath(NOTE), stroke = (x) => ({ kind: 'pen', color: '#123456', width: 2, opacity: 1, pts: [[0.1, 5], [x, 5]] });
+      await plugin.writeInk(NOTE);
+      const { t, r } = await at(33), key = t.dataset.paKey;
+      const onDisk = () => JSON.parse(files.get(dp));
+      const has = (d, k, c) => (d.sections[k] || []).some(s => s.color === c);
+
+      // 1. Another device changed the file (no event yet). Our next save merges instead of overwriting.
+      const remote = onDisk(); (remote.sections.REMOTE = []).push({ ...stroke(0.4), color: '#aa0001' });
+      files.set(dp, JSON.stringify(remote));
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 0; plugin.refreshToolbars();
+      drawPts([[r.left + 60, r.top + 20], [r.left + 120, r.top + 20]]);
+      const mine = lastStroke(t);
+      await plugin.writeInk(NOTE);
+      check('saving merges ink another device added (nothing is overwritten)', has(onDisk(), 'REMOTE', '#aa0001') && onDisk().sections[key].some(s => JSON.stringify(s) === JSON.stringify(mine)));
+      check('...and the merged ink shows up here too', has(plugin.inkData(NOTE), 'REMOTE', '#aa0001'));
+
+      // 2. A deletion on the other device stays deleted; our own deletion stays deleted.
+      const d2 = onDisk(); delete d2.sections.REMOTE; files.set(dp, JSON.stringify(d2));
+      plugin.selected.clear(); plugin.selected.add(mine); plugin.deleteSelection(st);
+      await plugin.writeInk(NOTE);
+      check('merge keeps deletions from both sides', !has(onDisk(), 'REMOTE', '#aa0001') && !(onDisk().sections[key] || []).some(s => JSON.stringify(s) === JSON.stringify(mine)));
+
+      // 3. A half-synced (unreadable) file is never saved over; we retry, then merge once it's whole.
+      const good = files.get(dp);
+      files.set(dp, good.slice(0, 20));
+      drawPts([[r.left + 60, r.top + 30], [r.left + 140, r.top + 30]]);
+      await plugin.writeInk(NOTE);
+      check('a half-synced ink file is left alone', files.get(dp) === good.slice(0, 20) && plugin.saveTimers.has(NOTE));
+      const fixed = JSON.parse(good); (fixed.sections.LATE = []).push({ ...stroke(0.3), color: '#aa0002' }); files.set(dp, JSON.stringify(fixed));
+      await plugin.writeInk(NOTE);
+      check('...and once it is whole, both sides are kept', has(onDisk(), 'LATE', '#aa0002') && onDisk().sections[key].length === plugin.strokesFor(NOTE, key).length);
+      if (plugin.saveFails) plugin.saveFails.clear();
+
+      // 4. Ink arriving as a NEW file for an open note (Sync "create") is picked up.
+      const arrived = onDisk(); (arrived.sections.NEWFILE = []).push({ ...stroke(0.2), color: '#aa0003' });
+      files.set(dp, JSON.stringify(arrived));
+      for (const fn of vaultHandlers.create || []) await fn(new O.TFile(dp));
+      check('ink that arrives as a new file is loaded', has(plugin.inkData(NOTE), 'NEWFILE', '#aa0003'));
+
+      // 5. Undo is per note: undoing here never touches another note.
+      const OTHER = 'Other note.md', theirStroke = stroke(0.5);
+      plugin.cache.set(OTHER, { version: 1, sections: { k: [theirStroke] } });
+      plugin.record({ type: 'add', path: OTHER, key: 'k', s: theirStroke });
+      drawPts([[r.left + 60, r.top + 40], [r.left + 100, r.top + 40]]);
+      const here = lastStroke(t);
+      plugin.undoLast(); plugin.undoLast();
+      check('undo only undoes this note', !plugin.strokesFor(NOTE, key).includes(here) && plugin.strokesFor(OTHER, 'k').includes(theirStroke));
+      check('the Undo button dims when only other notes have history', bar().querySelector('[aria-label="Undo"]').classList.contains('is-dim') || (plugin.lastFor && plugin.lastFor(plugin.undoStack, NOTE) >= 0));
+      plugin.cache.delete(OTHER); if (plugin.forgetHistory) plugin.forgetHistory(OTHER); else plugin.undoStack.length = plugin.redoStack.length = 0;
+
+      // 6. Two identical paragraphs get their own ink.
+      const twins = sections().filter(el => el.textContent.trim().startsWith('Same words twice.'));
+      check('identical paragraphs get different keys', twins.length === 2 && twins[0].dataset.paKey !== twins[1].dataset.paKey && twins[1].dataset.paKey.endsWith('~1'), twins.map(e => e.dataset.paKey));
+
+      // 7. An opacity drag that ends where it started can't later change an old selection.
+      const a1 = lastStroke(t);
+      drawPts([[r.left + 60, r.top + 50], [r.left + 100, r.top + 50]]);
+      const b1 = lastStroke(t);
+      plugin.prefs.tool = 'lasso'; plugin.refreshToolbars();
+      plugin.clearSelection(); plugin.selected.add(a1); plugin.showSelection(st);
+      document.querySelector('.pa-selmenu [aria-label="Style selection"]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      const op = () => document.querySelector('.pa-selcard input[aria-label="Opacity"]');
+      op().value = '50'; op().dispatchEvent(new Event('input')); op().value = '100'; op().dispatchEvent(new Event('input'));   // no "change"
+      plugin.selected.clear(); plugin.selected.add(b1); plugin.showSelection(st);
+      op().value = '40'; op().dispatchEvent(new Event('input')); op().dispatchEvent(new Event('change'));
+      check('a new selection\'s opacity changes only the new selection', b1.opacity === 0.4 && a1.opacity === 1, [a1.opacity, b1.opacity]);
+      plugin.clearSelection();
+
+      // 8. Renaming a note with a save pending: the save goes to the right file and paths follow.
+      plugin.prefs.tool = 'pen'; plugin.refreshToolbars();
+      drawPts([[r.left + 60, r.top + 60], [r.left + 110, r.top + 60]]);
+      const pend = lastStroke(t), NEW = 'Folder/Renamed note.md';
+      check('a save is pending before the rename', plugin.saveTimers.has(NOTE));
+      for (const fn of vaultHandlers.rename || []) await fn(new O.TFile(NEW), NOTE);
+      const newDp = plugin.dataPath(NEW);
+      check('rename saves pending ink, then moves the file', !files.has(dp) && files.has(newDp) && JSON.parse(files.get(newDp)).sections[key].some(s => JSON.stringify(s) === JSON.stringify(pend)));
+      check('...and the paragraphs and undo history follow the new name', t.dataset.paPath === NEW && t.paChild.notePath === NEW && !!plugin.pathsOf && plugin.pathsOf(plugin.undoStack[plugin.undoStack.length - 1]).includes(NEW));
+      for (const fn of vaultHandlers.rename || []) await fn(new O.TFile(NOTE), NEW);
+      check('...and back again', files.has(dp) && t.dataset.paPath === NOTE);
+      plugin.prefs.smoothing = 30; plugin.refreshToolbars();
+    }
+
+    // ===== pen side button / eraser end erase, without changing the tool =====
+    {
+      const { t, r } = await at(35), key = t.dataset.paKey;
+      const press = (type, x, y, button, buttons) => (document.elementFromPoint(x, y) || document.body).dispatchEvent(new PointerEvent(type, {
+        pointerType: 'pen', pointerId: 11, clientX: x, clientY: y, bubbles: true, cancelable: true, button, buttons }));
+      const swipe = (button, buttons, y) => { press('pointerdown', r.left + 90, y - 15, button, buttons); for (let i = 1; i <= 6; i++) press('pointermove', r.left + 90, y - 15 + i * 5, -1, buttons); press('pointerup', r.left + 90, y + 15, button, 0); };
+      plugin.prefs.tool = 'pen'; plugin.prefs.eraser.mode = 'stroke'; plugin.prefs.eraser.autoReturn = false; plugin.refreshToolbars();
+      drawPts([[r.left + 40, r.top + 20], [r.left + 140, r.top + 20]]);
+      const a = lastStroke(t);
+      swipe(2, 2, r.top + 20);
+      check('holding the pen side button erases', !plugin.strokesFor(NOTE, key).includes(a));
+      check('...and the pen stays the picked tool', plugin.prefs.tool === 'pen');
+      plugin.undoLast();
+      check('...and undo brings it back', plugin.strokesFor(NOTE, key).includes(a));
+      drawPts([[r.left + 40, r.top + 40], [r.left + 140, r.top + 40]]);
+      const b = lastStroke(t);
+      swipe(5, 32, r.top + 40);
+      check('the pen\'s eraser end erases', !plugin.strokesFor(NOTE, key).includes(b) && plugin.prefs.tool === 'pen');
+      plugin.prefs.eraser.autoReturn = true; plugin.refreshToolbars();
+    }
+
+    // ===== printing / Export to PDF =====
+    {
+      const rules = [...document.styleSheets].flatMap(sh => { try { return [...sh.cssRules]; } catch (e) { return []; } });
+      const media = (m) => rules.filter(r => r.media && [...r.media].includes(m)).map(r => r.cssText).join(' ');
+      check('printing hides the toolbar and selection UI', /\.pa-toolbar[^{]*\{[^}]*display: none/.test(media('print')));
+      check('dark-theme highlight tweaks apply on screen only (not on white paper)', /theme-dark \.pa-layer-hl/.test(media('screen')) && !rules.some(r => !r.media && /theme-dark \.pa-layer-hl/.test(r.selectorText || '')));
+    }
+
+    // ===== more shapes: diamond, pentagon, hexagon, star =====
+    {
+      const { t, r } = await at(36), w = t.offsetWidth;
+      const box = (s) => { const xs = s.pts.map(p => p[0] * w), ys = s.pts.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; };
+      const tapEl = (el) => el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      const expect = { diamond: 5, pentagon: 6, hexagon: 7, star: 11 };
+      plugin.prefs.tool = 'shape';
+      for (const [kind, n] of Object.entries(expect)) {
+        plugin.prefs.shape = { kind, color: '#1c7ed6', size: 2.5, dash: 'solid', fill: '#a5d8ff', rough: 0, edges: 'sharp', opacity: 1 };
+        drawPts([[r.left + 40, r.top + 10], [r.left + 100, r.top + 30], [r.left + 160, r.top + 70]]);
+        const s = lastStroke(t), [l, tp, rt, bt] = box(s), first = s.pts[0], last = s.pts[s.pts.length - 1];
+        check(`${kind}: closed outline with ${n - 1} corners`, s.geom === kind && s.pts.length === n && first[0] === last[0] && first[1] === last[1], s.pts.length);
+        check(`${kind}: fills the drag box`, Math.abs(rt - l - 120) < 1.5 && Math.abs(bt - tp - 60) < 1.5, [rt - l, bt - tp]);
+        check(`${kind}: keeps its fill`, s.fill === '#a5d8ff' && !!t.querySelector('.pa-layer-hl .pa-fill'));
+      }
+      const star = lastStroke(t), [sl, st2, sr, sb] = box(star), cx = (sl + sr) / 2;
+      const dist = star.pts.slice(0, 10).map(p => Math.hypot((p[0] * w - cx) / (sr - sl), (p[1] - (st2 + sb) / 2) / (sb - st2)));
+      check('star: points alternate out and in', dist.every((d, i) => (i % 2 ? d < 0.35 : d > 0.4)), dist.map(d => d.toFixed(2)));
+      plugin.prefs.shape = { kind: 'hexagon', color: '#1c7ed6', size: 2.5, dash: 'solid', fill: null, rough: 0, edges: 'sharp', opacity: 1 };
+      drawPts([[r.left + 200, r.top + 10], [r.left + 262, r.top + 68]]);
+      const hx = box(lastStroke(t));
+      check('a near-square drag makes a regular hexagon', Math.abs((hx[2] - hx[0]) - (hx[3] - hx[1])) < 1, [hx[2] - hx[0], hx[3] - hx[1]]);
+      plugin.prefs.shape = { kind: 'star', color: '#1c7ed6', size: 2.5, dash: 'solid', fill: null, rough: 1, edges: 'round', opacity: 1 };
+      drawPts([[r.left + 40, r.top + 10], [r.left + 160, r.top + 70]]);
+      const rs = lastStroke(t);
+      check('round edges and sketchy lines work on the new shapes', rs.edges === 'round' && rs.rough === 1 && /C/.test(t.querySelector('.pa-layer-ink path:last-child').getAttribute('d')));
+      tapEl(bar().querySelector('[aria-label="Color and size"]'));
+      const grid = document.querySelector('.pa-shape-grid'), kids = grid ? [...grid.children] : [];
+      check('shape picker shows all 9 shapes in two rows', kids.length === 9 && new Set(kids.map(k => Math.round(k.getBoundingClientRect().top))).size === 2);
+      tapEl(grid.querySelector('[aria-label="Star"]'));
+      check('picking Star works from the card', plugin.prefs.shape.kind === 'star');
+      tapEl(bar().querySelector('[aria-label="Color and size"]'));
+      for (let i = 0; i < 6; i++) plugin.undoLast();
+      plugin.prefs.shape = { kind: 'rect', color: '#1c7ed6', size: 2.5, dash: 'solid', fill: null, rough: 0, edges: 'sharp', opacity: 1 };
+      plugin.prefs.tool = 'pen'; plugin.refreshToolbars();
+    }
+
     // ===== vertical toolbar =====
     {
       const tapEl = (el) => el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));

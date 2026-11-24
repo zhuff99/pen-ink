@@ -31,6 +31,8 @@
     /* headless Chrome reports a shorter page than it renders; keep the toolbar one column */
     .pa-toolbar.is-vertical .pa-row { max-height: none !important; }
   `;
+  // &paper: print like Obsidian's Export to PDF does, white paper even while the theme is dark.
+  if (q.has('paper')) css.textContent += `@media print { body, .workspace-leaf-content, .view-content, .markdown-preview-view { background: #fff !important; color: #222 !important; --text-normal: #222; } .view-header { display: none !important; } }`;
   document.head.appendChild(css);
   document.addEventListener('DOMContentLoaded', () => {
     document.body.className = q.has('dark') ? 'theme-dark' : 'theme-light';
@@ -180,6 +182,18 @@
     await plugin.toggle(view);
     const st = plugin.sessions.get(view), tap = (sel) => document.querySelector(sel).dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
 
+    // &newshapes: draw the diamond, pentagon, hexagon and star under the note, the way a Pencil would.
+    if (q.has('newshapes')) {
+      const lr2 = secs()[secs().length - 1].getBoundingClientRect();
+      const pen = (type, x, y) => (document.elementFromPoint(x, y) || document.body).dispatchEvent(new PointerEvent(type, { pointerType: 'pen', pointerId: 5, clientX: x, clientY: y, bubbles: true, cancelable: true, button: 0, buttons: type === 'pointerup' ? 0 : 1 }));
+      ['diamond', 'pentagon', 'hexagon', 'star'].forEach((kind, i) => {
+        Object.assign(plugin.prefs.shape, { kind, color: ['#e03131', '#1971c2', '#2f9e44', '#f08c00'][i], size: 2.5, rough: i % 2, edges: i === 2 ? 'round' : 'sharp', fill: ['#ffc9c9', '#a5d8ff', '#b2f2bb', '#ffec99'][i] });
+        plugin.prefs.tool = 'shape';
+        const x0 = lr2.left + 20 + i * 150, y0 = lr2.bottom + 30;
+        pen('pointerdown', x0, y0); pen('pointermove', x0 + 55, y0 + 55); pen('pointermove', x0 + 110, y0 + 110); pen('pointerup', x0 + 110, y0 + 110);
+      });
+      plugin.prefs.tool = 'hl'; plugin.refreshToolbars();
+    }
     if (q.get('card') === 'shape') {
       Object.assign(plugin.prefs.shape, { kind: 'ellipse', color: '#e03131', size: 2.5, rough: 1, fill: '#ffc9c9', edges: 'sharp' });
       plugin.prefs.tool = 'shape';

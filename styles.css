@@ -18,9 +18,18 @@
 
 /* Highlighter layer: blended so the text stays crisp, as if the ink sat behind it. */
 .pa-layer-hl { mix-blend-mode: multiply; }
-.theme-dark .pa-layer-hl { mix-blend-mode: lighten; }
-.theme-dark .pa-layer-hl path { stroke-opacity: 0.6; }   /* dark backgrounds swallow 40% ink */
-.theme-dark .pa-layer-hl .pa-fill { opacity: 0.55; }     /* light shape fills: keep white text readable */
+/* Dark theme, on screen only: printed or exported pages are white, where "lighten" would hide highlights. */
+@media screen {
+  .theme-dark .pa-layer-hl { mix-blend-mode: lighten; }
+  .theme-dark .pa-layer-hl path { stroke-opacity: 0.6; }   /* dark backgrounds swallow 40% ink */
+  .theme-dark .pa-layer-hl .pa-fill { opacity: 0.55; }     /* light shape fills: keep white text readable */
+}
+
+/* Print and Export to PDF: keep the ink and its colors, drop the toolbar and selection UI. */
+@media print {
+  .pa-overlay { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .pa-toolbar, .pa-ui, .pa-selbox, .pa-lasso, .pa-laser, .pa-ring, .pa-halo { display: none; }
+}
 
 .pa-halo { stroke: var(--interactive-accent); stroke-opacity: 0.3; }
 
@@ -56,6 +65,25 @@
   border: 1.5px dashed var(--interactive-accent); border-radius: 8px;
   pointer-events: none;
 }
+/* Resize handles on the corners and a rotate knob hanging under the box (30px: KNOB_GAP in main.js). */
+.pa-selbox .pa-handle, .pa-selbox .pa-knob {
+  position: absolute; box-sizing: border-box; background: var(--background-primary);
+  border: 1.5px solid var(--interactive-accent); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+.pa-selbox .pa-handle { width: 14px; height: 14px; border-radius: 4px; }
+.pa-selbox .pa-handle.is-nw { left: -8.5px; top: -8.5px; }
+.pa-selbox .pa-handle.is-ne { right: -8.5px; top: -8.5px; }
+.pa-selbox .pa-handle.is-sw { left: -8.5px; bottom: -8.5px; }
+.pa-selbox .pa-handle.is-se { right: -8.5px; bottom: -8.5px; }
+.pa-selbox .pa-knob-stem { position: absolute; left: calc(50% - 0.75px); top: 100%; width: 0; height: 20px; border-left: 1.5px solid var(--interactive-accent); }
+.pa-selbox .pa-knob {
+  left: calc(50% - 11px); top: calc(100% + 20.5px); width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; color: var(--interactive-accent);
+}
+.pa-annotating.pa-cur-move .markdown-preview-view { cursor: move; }
+.pa-annotating.pa-cur-nwse .markdown-preview-view { cursor: nwse-resize; }
+.pa-annotating.pa-cur-nesw .markdown-preview-view { cursor: nesw-resize; }
+.pa-annotating.pa-cur-rotate .markdown-preview-view { cursor: grab; }
 
 /* ----- toolbar, cards and the selection menu ----- */
 
@@ -232,6 +260,9 @@
 }
 .pa-ui .pa-btn-shape:not(#pa-x) { width: 48px; height: 38px; border-radius: 8px; }
 .pa-ui .pa-seg .pa-btn-shape.is-on:not(#pa-x) { color: var(--interactive-accent); }
+/* Nine shapes: a 5-wide grid (two rows) instead of one long row. */
+.pa-seg.pa-shape-grid { display: grid; grid-template-columns: repeat(5, 1fr); }
+.pa-ui .pa-shape-grid .pa-btn-shape:not(#pa-x) { width: auto; }
 
 /* On/off switch. */
 .pa-ui .pa-switch:not(#pa-x) { width: 100%; justify-content: space-between; padding: 0 2px; color: var(--text-normal); font-weight: 500; }

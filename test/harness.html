@@ -93,6 +93,7 @@
     else if (i % 10 === 0) blocks.push('## Heading ' + i);
     else blocks.push('Paragraph ' + i + '. The quick brown fox jumps over the lazy dog, then reads a few more words so the line wraps nicely across the page width.');
   }
+  if (!DEMO) blocks.push('Same words twice.', 'Same words twice.');   // identical blocks must not share ink
   const text = blocks.join('\n\n');
   const lines = text.split('\n');
 

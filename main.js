@@ -15,6 +15,7 @@ const { Plugin, MarkdownView, MarkdownRenderChild, Notice, normalizePath, Platfo
 // ---------------------------------------------------------------------------
 const FOLDER = 'Annotations';   // default ink folder (changeable in settings)
 const SWATCHES = ['#ffd400', '#40c057', '#f06595', '#e03131', '#1c7ed6', '#000000'];
+const KNOB_GAP = 30;   // px from the bottom of the selection box to the center of its rotate knob
 const SIZES = { pen: [1.5, 2.5, 4, 7], hl: [10, 16, 24, 32], shape: [1.5, 2.5, 4, 7], eraser: [6, 12, 20, 30] };   // px: stroke widths; eraser radius
 const HL_OPACITY = 0.4;     // highlighter translucency
 const MAX_RECENT = 6;       // custom colors remembered from the color wheel
@@ -22,7 +23,9 @@ const MAX_FAVORITES = 6;
 const SAVE_DELAY = 600;     // ms to wait after the last change before writing the ink file
 const HOLD_MS = 500;        // hold the Pencil still this long at the end of a stroke to straighten it
 const SNAP_DEG = 8;         // straight lines within this many degrees of flat/upright snap to it
-const SHAPES = ['rect', 'ellipse', 'triangle', 'line', 'arrow'];
+const SHAPES = ['rect', 'ellipse', 'triangle', 'diamond', 'pentagon', 'hexagon', 'star', 'line', 'arrow'];
+const CORNERED = ['rect', 'triangle', 'diamond', 'pentagon', 'hexagon', 'star'];   // closed polygons: round edges apply
+const FILLABLE = [...CORNERED, 'ellipse'];
 const SQUARE_SNAP = 0.2;    // rectangles/ellipses within 20% of square snap to a perfect square/circle
 const LASER_TRAIL_MS = 600;  // how long the laser pointer's trail lingers
 const ZOOM_MAX = 4;         // pinch zoom goes from 1x to this
@@ -65,6 +68,30 @@ let lastText = null, lastLines = null;
 function sectionSource(info) {
   if (info.text !== lastText) { lastText = info.text; lastLines = info.text.split('\n'); }
   return lastLines.slice(info.lineStart, info.lineEnd + 1).join('\n').trim();
+}
+
+// Ink file contents -> data, or null if it isn't (yet) a whole ink file (e.g. half-synced).
+function parseInk(raw) {
+  try { const d = JSON.parse(raw); return d && d.sections && typeof d.sections === 'object' ? d : null; } catch (e) { return null; }
+}
+
+// Identical blocks (two "---" lines, a repeated heading) would hash to the same key and share
+// one set of ink. The first keeps the plain key (so existing ink stays put); later copies get "~n".
+let offsText = null, offs = null;
+function repeatIndex(info, src) {
+  const text = info.text;
+  if (offsText !== text) {
+    offsText = text; offs = [0];
+    for (let i = 0; i < text.length; i++) if (text[i] === '\n') offs.push(i + 1);
+  }
+  const at = offs[info.lineStart] || 0;
+  let n = 0, i = text.indexOf(src);
+  while (i >= 0 && i < at) {
+    const end = i + src.length;
+    if ((i === 0 || text[i - 1] === '\n') && (end === text.length || text[end] === '\n')) n++;
+    i = text.indexOf(src, i + 1);
+  }
+  return n;
 }
 
 const isColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
@@ -256,11 +283,28 @@ function resample(P, step) {
 }
 
 // Center and radii of a full (un-erased) ellipse shape, from its outline points. Else null.
+// A rotated ellipse (s.rot, degrees, set by Select's rotate knob) is measured in its own axes.
 function ellipseOf(s, P) {
   if (s.geom !== 'ellipse' || P.length < 60 || !isClosed(P)) return null;
+  const rot = s.rot || 0;
+  if (rot) {
+    const Q = P.slice(0, -1), cx = Q.reduce((a, p) => a + p[0], 0) / Q.length, cy = Q.reduce((a, p) => a + p[1], 0) / Q.length;
+    const c = Math.cos(-rot * Math.PI / 180), n = Math.sin(-rot * Math.PI / 180);
+    let rx = 0, ry = 0;
+    for (const p of Q) { const dx = p[0] - cx, dy = p[1] - cy; rx = Math.max(rx, Math.abs(dx * c - dy * n)); ry = Math.max(ry, Math.abs(dx * n + dy * c)); }
+    return { cx, cy, rx, ry, rot };
+  }
   const xs = P.map(p => p[0]), ys = P.map(p => p[1]);
   const l = Math.min(...xs), r = Math.max(...xs), t = Math.min(...ys), b = Math.max(...ys);
-  return { cx: (l + r) / 2, cy: (t + b) / 2, rx: (r - l) / 2, ry: (b - t) / 2 };
+  return { cx: (l + r) / 2, cy: (t + b) / 2, rx: (r - l) / 2, ry: (b - t) / 2, rot: 0 };
+}
+
+// A point on ellipse E at angle a (in the ellipse's own, possibly rotated, frame).
+function onEllipse(E, cx, cy, rx, ry, a) {
+  const x = rx * Math.cos(a), y = ry * Math.sin(a);
+  if (!E.rot) return [cx + x, cy + y];
+  const c = Math.cos(E.rot * Math.PI / 180), n = Math.sin(E.rot * Math.PI / 180);
+  return [cx + x * c - y * n, cy + x * n + y * c];
 }
 
 // Sketchy ellipse: two passes around the true ellipse, each starting at a random angle with a
@@ -275,7 +319,7 @@ function roughEllipse(E, level, seed, width) {
     const cx = E.cx + j(0.4), cy = E.cy + j(0.4), Q = [];
     for (let i = 0; i <= n; i++) {
       const a = a0 + (i / n) * (Math.PI * 2 + overlap);
-      Q.push([cx + (E.rx + j(1)) * Math.cos(a), cy + (E.ry + j(1)) * Math.sin(a)]);
+      Q.push(onEllipse(E, cx, cy, E.rx + j(1), E.ry + j(1), a));
     }
     d += ` M${fmt(Q[0])}` + catmull(Q, false);
   }
@@ -311,7 +355,7 @@ function roughData(P, level, seed, width, closed, straight) {
 // The outline points (px) of a shape, with rounded corners applied.
 function shapeOutline(s, w) {
   let P = s.pts.map(p => [p[0] * w, p[1]]);
-  const closed = isClosed(P), rounded = s.edges === 'round' && (s.geom === 'rect' || s.geom === 'triangle') && P.length > 2;
+  const closed = isClosed(P), rounded = s.edges === 'round' && CORNERED.includes(s.geom) && P.length > 2;
   if (rounded) P = roundCorners(P, closed);
   return { P, closed, rounded };
 }
@@ -321,8 +365,9 @@ function geomData(s, w) {
   const { P, closed, rounded } = shapeOutline(s, w);
   const E = ellipseOf(s, P);
   if (E && !s.rough) {     // a true ellipse (two half arcs), not a polygon
-    const f = (x, y) => `${x.toFixed(1)},${y.toFixed(1)}`, R = `${E.rx.toFixed(1)},${E.ry.toFixed(1)}`;
-    return `M${f(E.cx + E.rx, E.cy)} A${R} 0 1 1 ${f(E.cx - E.rx, E.cy)} A${R} 0 1 1 ${f(E.cx + E.rx, E.cy)} Z`;
+    const R = `${E.rx.toFixed(1)},${E.ry.toFixed(1)} ${(E.rot || 0).toFixed(1)}`;
+    const a = fmt(onEllipse(E, E.cx, E.cy, E.rx, E.ry, 0)), b = fmt(onEllipse(E, E.cx, E.cy, E.rx, E.ry, Math.PI));
+    return `M${a} A${R} 1 1 ${b} A${R} 1 1 ${a} Z`;
   }
   if (E) return roughEllipse(E, s.rough, s.seed || 1, s.width);
   if (s.rough) return roughData(P, s.rough, s.seed || 1, s.width, closed, !rounded && s.geom !== 'ellipse');
@@ -489,13 +534,26 @@ function snapAxis(x0, y0, x, y) {
 // Points (px) for a shape dragged from (x0,y0) to (x1,y1). Closed shapes repeat the first point.
 // Near-square rectangles/ellipses snap to perfect squares/circles; near-flat lines snap flat.
 function shapePoints(kind, x0, y0, x1, y1, width) {
-  if (kind === 'rect' || kind === 'ellipse') {
+  if (kind !== 'line' && kind !== 'arrow' && kind !== 'triangle') {   // near-square drags snap to square (regular shapes)
     const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0), m = Math.max(w, h);
     if (m && Math.abs(w - h) / m < SQUARE_SNAP) { x1 = x0 + Math.sign(x1 - x0 || 1) * m; y1 = y0 + Math.sign(y1 - y0 || 1) * m; }
   }
   const l = Math.min(x0, x1), r = Math.max(x0, x1), t = Math.min(y0, y1), b = Math.max(y0, y1);
   if (kind === 'rect') return [[l, t], [r, t], [r, b], [l, b], [l, t]];
   if (kind === 'triangle') return [[(l + r) / 2, t], [r, b], [l, b], [(l + r) / 2, t]];
+  if (kind === 'diamond') return [[(l + r) / 2, t], [r, (t + b) / 2], [(l + r) / 2, b], [l, (t + b) / 2], [(l + r) / 2, t]];
+  if (kind === 'pentagon' || kind === 'hexagon' || kind === 'star') {
+    // A regular polygon (or 5-point star), first point at the top, stretched to fill the drag box.
+    const n = kind === 'pentagon' ? 5 : kind === 'hexagon' ? 6 : 10, U = [];
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (i / n) * Math.PI * 2 + (kind === 'hexagon' ? Math.PI / 6 : 0), rad = kind === 'star' && i % 2 ? 0.42 : 1;
+      U.push([rad * Math.cos(a), rad * Math.sin(a)]);
+    }
+    const xs = U.map(p => p[0]), ys = U.map(p => p[1]), ux = Math.min(...xs), uy = Math.min(...ys);
+    const sx = (r - l) / (Math.max(...xs) - ux || 1), sy = (b - t) / (Math.max(...ys) - uy || 1);
+    const P = U.map(p => [l + (p[0] - ux) * sx, t + (p[1] - uy) * sy]);
+    return [...P, P[0]];
+  }
   if (kind === 'ellipse') {
     const cx = (l + r) / 2, cy = (t + b) / 2, rx = (r - l) / 2, ry = (b - t) / 2, n = 64, pts = [];
     for (let i = 0; i <= n; i++) { const a = (i / n) * Math.PI * 2; pts.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); }
@@ -551,6 +609,9 @@ const ICONS = {
   laser: ['M4 20l8.5-8.5', 'M16.5 10a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z', 'M16.5 1.5v1', 'M22.5 7.5h-1', 'M20.7 3.3l-.8.8', 'M12.3 3.3l.8.8', 'M20.7 11.7l-.8-.8'],
   sliders: ['M4 21v-7', 'M4 10V3', 'M12 21v-9', 'M12 8V3', 'M20 21v-5', 'M20 12V3', 'M1 14h6', 'M9 8h6', 'M17 16h6'],
   duplicate: ['M8 8h12v12H8z', 'M4 16V4h12'],
+  rotate: ['M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8', 'M21 3v5h-5'],
+  copy: ['M9 2h6v4H9z', 'M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2'],
+  paste: ['M9 2h6v4H9z', 'M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5', 'M16 4h2a2 2 0 0 1 2 2v4', 'M13 15h8', 'M18 12l3 3-3 3'],
   front: ['M12 19V5', 'M5 12l7-7 7 7'],
   back: ['M12 5v14', 'M19 12l-7 7-7-7'],
   select: ['M11 3.5c4.6-.6 9.6 1.4 9.5 5.8-.1 3.7-3.2 4.6-3.6 7.6-.4 3.1-4.6 4.4-8.2 3.3C4.7 19 2.8 15.6 3.6 11.5 4.3 7.5 6.9 4 11 3.5z'],
@@ -567,10 +628,13 @@ const ICONS = {
   rect: ['M4 5h16v14H4z'],
   ellipse: ['M3 12a9 7 0 1 0 18 0a9 7 0 1 0 -18 0'],
   triangle: ['M12 4L21 20H3z'],
+  diamond: ['M12 3l9 9-9 9-9-9z'],
+  pentagon: ['M12 3l9 6.5-3.4 10.5H6.4L3 9.5z'],
+  hexagon: ['M7 4h10l5 8-5 8H7l-5-8z'],
   line: ['M4 20L20 4'],
   arrow: ['M4 20L20 4', 'M10 4h10v10'],
 };
-const SHAPE_NAMES = { rect: 'Rectangle', ellipse: 'Ellipse', triangle: 'Triangle', line: 'Line', arrow: 'Arrow' };
+const SHAPE_NAMES = { rect: 'Rectangle', ellipse: 'Ellipse', triangle: 'Triangle', diamond: 'Diamond', pentagon: 'Pentagon', hexagon: 'Hexagon', star: 'Star', line: 'Line', arrow: 'Arrow' };
 
 function svgIcon(paths, size, strokeWidth, dash) {
   const svg = activeDocument.createElementNS(SVGNS, 'svg');
@@ -651,7 +715,10 @@ class SectionChild extends MarkdownRenderChild {
     el.paChild = this;
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(el);
-    this.plugin.loadInk(this.notePath).then(() => this.draw());
+    // Draw right away when the ink is already loaded: Export to PDF renders the note into a fresh
+    // page and prints it soon after, so waiting a tick could leave the ink out.
+    if (this.plugin.inkData(this.notePath)) this.draw();
+    else this.plugin.loadInk(this.notePath).then(() => this.draw());
   }
   onunload() {
     if (this.ro) this.ro.disconnect();
@@ -745,8 +812,10 @@ class PenInk extends Plugin {
     this.lastWritten = new Map();  // notePath -> JSON we last wrote/read (to spot Sync changes)
     this.sessions = new Map();     // MarkdownView -> annotation session state
     this.selected = new Set();     // strokes picked with the lasso
+    this.inkClip = null;           // copied ink: { w, h, n, strokes } in px from the copied box's top-left
     this.undoStack = [];
     this.redoStack = [];
+    this.saveFails = new Map();    // notePath -> failed attempts to read the ink file before saving
     this.prefsTimer = null;
     this.prefs = mergePrefs(await this.loadData());
 
@@ -757,7 +826,8 @@ class PenInk extends Plugin {
       if (!info || !ctx.sourcePath) return;
       const src = sectionSource(info);
       if (!src) return;
-      ctx.addChild(new SectionChild(el, this, ctx.sourcePath, hash(src)));
+      const n = repeatIndex(info, src);
+      ctx.addChild(new SectionChild(el, this, ctx.sourcePath, hash(src) + (n ? '~' + n : '')));
     });
 
     const inSession = (fn) => (checking) => {
@@ -775,6 +845,32 @@ class PenInk extends Plugin {
     this.addCommand({ id: 'undo', name: 'Undo last ink change', checkCallback: inSession(() => this.undoLast()) });
     this.addCommand({ id: 'redo', name: 'Redo last ink change', checkCallback: inSession(() => this.redoLast()) });
     this.addCommand({ id: 'reset-zoom', name: 'Reset zoom to 100%', checkCallback: inSession((view) => this.resetZoom(this.sessions.get(view))) });
+    const withSel = (fn) => (checking) => {
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!view || !this.sessions.has(view) || !this.selected.size) return false;
+      if (!checking) fn(this.sessions.get(view));
+      return true;
+    };
+    this.addCommand({ id: 'copy-ink', name: 'Copy selected ink', checkCallback: withSel((st) => this.copySelection(st)) });
+    this.addCommand({ id: 'cut-ink', name: 'Cut selected ink', checkCallback: withSel((st) => this.copySelection(st, true)) });
+    this.addCommand({ id: 'paste-ink', name: 'Paste ink', checkCallback: (checking) => {
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!view || !this.sessions.has(view) || !this.inkClip) return false;
+      if (!checking) this.pasteInk(this.sessions.get(view));
+      return true;
+    }});
+    // Cmd/Ctrl + C, X, V while marking up. Only when there's ink to act on, and never while typing
+    // in a field, so normal copy and paste keep working everywhere else.
+    this.registerDomEvent(activeDocument, 'keydown', (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      const t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView), st = view && this.sessions.get(view);
+      if (!st) return;
+      const k = e.key.toLowerCase();
+      if ((k === 'c' || k === 'x') && this.selected.size) { e.preventDefault(); this.copySelection(st, k === 'x'); }
+      else if (k === 'v' && this.inkClip) { e.preventDefault(); this.pasteInk(st); }
+    });
 
     // Header button: our own marker icon, so it doesn't look like Obsidian's edit (pencil) toggle.
     let headerIcon = 'highlighter';
@@ -789,19 +885,42 @@ class PenInk extends Plugin {
     });
     this.app.workspace.onLayoutReady(addButtons);
     this.registerEvent(this.app.workspace.on('layout-change', addButtons));
+    // A pane that was closed while marking up: end its session (listeners, toolbar, timers).
+    this.registerEvent(this.app.workspace.on('layout-change', () => {
+      for (const v of [...this.sessions.keys()]) if (v.containerEl && !v.containerEl.isConnected) this.stop(v);
+    }));
 
     this.registerEvent(this.app.vault.on('rename', async (file, oldPath) => {
+      if (!(file instanceof TFile) || !oldPath.endsWith('.md')) return;
       try {
+        if (this.saveTimers.has(oldPath)) await this.writeInk(oldPath);   // save under the old name first
         const from = this.dataPath(oldPath), to = this.dataPath(file.path), src = this.inkFile(from);
-        if (from === to || !src || this.inkFile(to)) return;
-        await this.ensureFolder(to);
-        await this.app.vault.rename(src, to);
+        if (from !== to && src && !this.inkFile(to)) {
+          await this.ensureFolder(to);
+          await this.app.vault.rename(src, to);
+        }
         for (const m of [this.cache, this.lastWritten]) if (m.has(oldPath)) { m.set(file.path, m.get(oldPath)); m.delete(oldPath); }
+        // Rendered paragraphs and undo steps still name the old path.
+        for (const el of activeDocument.querySelectorAll('[data-pa-path]')) {
+          if (el.dataset.paPath !== oldPath) continue;
+          el.dataset.paPath = file.path;
+          if (el.paChild) el.paChild.notePath = file.path;
+        }
+        const retarget = (a) => { if (a.type === 'batch') a.items.forEach(retarget); else if (a.path === oldPath) a.path = file.path; };
+        for (const a of [...this.undoStack, ...this.redoStack]) retarget(a);
       } catch (e) { console.error('Pen Ink: could not move ink for renamed note', oldPath, e); }
     }));
 
     // Ink changed on another device (Obsidian Sync): reload it so we never save stale data over it.
     this.registerEvent(this.app.vault.on('modify', (file) => this.onInkFileChanged(file)));
+    // ...or arrived for the first time (Sync creates the file) while the note is already open.
+    this.registerEvent(this.app.vault.on('create', (file) => this.onInkFileChanged(file)));
+    // Notes already open in reading view were rendered before we loaded: re-render them so their
+    // paragraphs get ink layers (also after an update or turning the plugin off and on).
+    this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves(leaf => {
+      const v = leaf.view;
+      if (v instanceof MarkdownView && v.getMode && v.getMode() === 'preview' && v.previewMode && v.previewMode.rerender) v.previewMode.rerender(true);
+    }));
   }
 
   onunload() {
@@ -811,6 +930,9 @@ class PenInk extends Plugin {
       if (v && v.penInkButton) { v.penInkButton.remove(); delete v.penInkButton; }
     });
     for (const notePath of [...this.saveTimers.keys()]) this.writeInk(notePath);   // flush pending saves
+    // Rendered paragraphs belong to Obsidian's renderer, not to us: take our layers off them now,
+    // so a re-enabled (or updated) copy of the plugin starts clean.
+    for (const el of activeDocument.querySelectorAll('[data-pa-key]')) if (el.paChild) el.paChild.onunload();
     if (this.prefsTimer) { window.clearTimeout(this.prefsTimer); this.saveData(this.prefs); }
   }
 
@@ -863,9 +985,23 @@ class PenInk extends Plugin {
     window.clearTimeout(this.saveTimers.get(notePath));
     this.saveTimers.delete(notePath);
     const d = this.inkData(notePath); if (!d) return;
-    for (const k of Object.keys(d.sections)) if (!d.sections[k].length) delete d.sections[k];
-    const f = this.dataPath(notePath), json = JSON.stringify(d);
+    const f = this.dataPath(notePath);
     try {
+      // Never save over ink we haven't seen. If the file changed since we last read or wrote it
+      // (another device, via Sync), merge both sides. If it isn't a whole ink file right now
+      // (half-synced, or unreadable), leave it alone and try again shortly.
+      const existing = this.inkFile(f);
+      if (existing) {
+        const raw = await this.app.vault.read(existing);
+        if (raw !== this.lastWritten.get(notePath)) {
+          const theirs = parseInk(raw);
+          if (!theirs) { this.retrySave(notePath); return; }
+          if (this.mergeInk(notePath, d, theirs)) { this.forgetHistory(notePath); this.redraw(notePath); this.afterHistory(); }
+        }
+      }
+      this.saveFails.delete(notePath);
+      for (const k of Object.keys(d.sections)) if (!d.sections[k].length) delete d.sections[k];
+      const json = JSON.stringify(d);
       this.lastWritten.set(notePath, json);
       const file = this.inkFile(f);
       if (file) await this.app.vault.modify(file, json);
@@ -874,6 +1010,54 @@ class PenInk extends Plugin {
     } catch (e) {
       console.error('Pen Ink: could not save ink for', notePath, e);
       new Notice('Pen Ink: could not save ink. ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  // The ink file can't be read as ink right now: keep our copy in memory and try again soon.
+  retrySave(notePath) {
+    const n = (this.saveFails.get(notePath) || 0) + 1;
+    this.saveFails.set(notePath, n);
+    if (n === 5) new Notice(`Pen Ink: can't read the ink file for ${notePath}, so new ink isn't being saved over it yet. It will keep trying.`, 10000);
+    window.clearTimeout(this.saveTimers.get(notePath));
+    this.saveTimers.set(notePath, window.setTimeout(() => this.writeInk(notePath), Math.min(30000, 1500 * n)));
+  }
+
+  // Three-way merge, per paragraph: start from their strokes, drop the ones we deleted, add the
+  // ones we drew (unless they deleted them). "Base" is the file as we last read or wrote it.
+  // Strokes are compared by content; ours are kept as the same objects (undo/selection still work).
+  // Returns true if our copy changed.
+  mergeInk(notePath, d, theirs) {
+    const base = parseInk(this.lastWritten.get(notePath) || '') || { sections: {} };
+    const bag = (arr) => { const m = new Map(); for (const x of arr) { const j = JSON.stringify(x); m.set(j, (m.get(j) || 0) + 1); } return m; };
+    const take = (m, j) => { const n = m.get(j) || 0; if (n > 0) m.set(j, n - 1); return n > 0; };
+    let changed = false;
+    for (const k of new Set([...Object.keys(d.sections), ...Object.keys(theirs.sections)])) {
+      const mine = d.sections[k] || [], other = theirs.sections[k] || [], B = bag(base.sections[k] || []);
+      const M = bag(mine), O = bag(other), delMine = new Map(), delOther = new Map();
+      for (const [j, n] of B) { if (n > (M.get(j) || 0)) delMine.set(j, n - (M.get(j) || 0)); if (n > (O.get(j) || 0)) delOther.set(j, n - (O.get(j) || 0)); }
+      const used = new Set(), out = [];
+      for (const x of other) {
+        const j = JSON.stringify(x);
+        if (take(delMine, j)) continue;
+        const same = mine.find(y => !used.has(y) && JSON.stringify(y) === j);
+        if (same) used.add(same);
+        out.push(same || x);
+      }
+      for (const y of mine) if (!used.has(y) && !take(delOther, JSON.stringify(y))) out.push(y);
+      if (out.length !== mine.length || out.some((x, i) => x !== mine[i])) {
+        changed = true;
+        if (d.sections[k]) d.sections[k].splice(0, d.sections[k].length, ...out); else d.sections[k] = out;
+      }
+    }
+    return changed;
+  }
+
+  // Undo steps for a note that just changed underneath us point at strokes that may be gone.
+  forgetHistory(notePath) {
+    const touches = (a) => this.pathsOf(a).includes(notePath);
+    for (const stack of [this.undoStack, this.redoStack]) {
+      const keep = stack.filter(a => !touches(a));
+      stack.splice(0, stack.length, ...keep);
     }
   }
 
@@ -887,14 +1071,17 @@ class PenInk extends Plugin {
     let raw;
     try { raw = await this.app.vault.read(file); } catch (e) { return; }
     if (raw === this.lastWritten.get(notePath) || this.saveTimers.has(notePath)) return;  // our own write / new local ink
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || !parsed.sections || typeof parsed.sections !== 'object') return;
-      this.cache.set(notePath, parsed);
-      this.lastWritten.set(notePath, raw);
-      this.clearSelection();
-      this.redraw(notePath);
-    } catch (e) { /* half-synced file; the next modify event will have all of it */ }
+    const theirs = parseInk(raw);
+    if (!theirs) return;   // half-synced: the next modify event will have all of it
+    const d = this.inkData(notePath);
+    if (!d) return;
+    const merged = this.mergeInk(notePath, d, theirs);
+    this.lastWritten.set(notePath, raw);
+    if (JSON.stringify(d.sections) !== JSON.stringify(theirs.sections)) this.saveInk(notePath);   // we had ink they don't
+    if (!merged) return;
+    this.forgetHistory(notePath);
+    this.redraw(notePath);
+    this.afterHistory();
   }
 
   redraw(notePath, key) {
@@ -1075,7 +1262,7 @@ class PenInk extends Plugin {
       }
       if (!st.tap || e.touches.length) return;
       const tap = st.tap; st.tap = null;
-      if (!tap.cancelled && tap.max === 2 && Date.now() - tap.t0 < 400) this.undoLast();
+      if (!tap.cancelled && tap.max === 2 && Date.now() - tap.t0 < 400) this.undoLast(view.file ? view.file.path : null);
     };
     // Mac trackpad pinch arrives as Ctrl + scroll; Ctrl/Cmd + mouse wheel zooms too.
     // While zoomed, sideways scrolling pans left/right (up/down still scrolls the note).
@@ -1099,9 +1286,13 @@ class PenInk extends Plugin {
 
     st.onDown = (e) => {
       if (e.pointerType === 'pen' && !inToolbar(e)) st.penDownAt = Date.now();
-      if (!canDraw(e) || e.button > 0 || inToolbar(e) || !reading()) return;
+      // A pen's eraser end (button 5) or held side button (button 2) erases for that one stroke,
+      // whatever tool is picked (S Pen, Surface and Wacom pens; the Apple Pencil has neither).
+      const penErase = e.pointerType === 'pen' && P.penButtonErases !== false && (e.button === 5 || e.button === 2 || (e.buttons & 34) > 0);
+      if (!canDraw(e) || (e.button > 0 && !penErase) || inToolbar(e) || !reading()) return;
       if (st.stroke || st.eraserId != null || st.lasso || st.moving || st.shape || st.laserId != null) return;   // already busy with another pointer
-      const tool = P.tool;
+      const tool = penErase ? 'eraser' : P.tool;
+      st.tempErase = penErase && P.tool !== 'eraser';
 
       if (tool === 'laser') {
         e.preventDefault();
@@ -1118,8 +1309,9 @@ class PenInk extends Plugin {
         st.lastPenTime = Date.now();
         st.toolbar.closePanel();
         try { root.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
-        if (st.selBox && this.selected.size && this.pointInBox(st.selBox, e.clientX, e.clientY)) {
-          this.startMove(st, e);
+        const grab = this.selected.size ? this.handleAt(st, e.clientX, e.clientY) : null;
+        if (grab) {
+          this.startMove(st, e, grab);
         } else {
           this.clearSelection();
           this.startLasso(st, e);
@@ -1155,12 +1347,19 @@ class PenInk extends Plugin {
 
     st.onMove = (e) => {
       // Eraser ring follows the Pencil (also while hovering, on iPads that support it).
-      if (P.tool === 'eraser' && canDraw(e) && !inToolbar(e)) showRing(e);
+      if ((P.tool === 'eraser' || (st.tempErase && st.eraserId === e.pointerId)) && canDraw(e) && !inToolbar(e)) showRing(e);
       // Laser: the dot follows the Pencil/mouse (also while hovering); a trail while pressed.
       if (P.tool === 'laser' && canDraw(e) && (!inToolbar(e) || st.laserId === e.pointerId)) {
         if (st.laserId === e.pointerId) e.preventDefault();
         this.laserMove(st, e);
         return;
+      }
+      if (P.tool === 'lasso' && !st.moving && e.pointerType === 'mouse') {
+        // Mouse hover over the selection: show what a drag there would do.
+        const g = this.selected.size ? this.handleAt(st, e.clientX, e.clientY) : null;
+        for (const [k, c] of [['move', 'pa-cur-move'], ['rotate', 'pa-cur-rotate'], ['nw', 'pa-cur-nwse'], ['ne', 'pa-cur-nesw']]) {
+          root.classList.toggle(c, g === k || (k === 'nw' && g === 'se') || (k === 'ne' && g === 'sw'));
+        }
       }
       if (st.lasso && e.pointerId === st.lasso.id) { e.preventDefault(); this.extendLasso(st, e); return; }
       if (st.shape && e.pointerId === st.shape.id) { e.preventDefault(); this.dragShape(st, e); return; }
@@ -1196,6 +1395,7 @@ class PenInk extends Plugin {
         st.lastPenTime = Date.now();
         if (st.eraseBatch && st.eraseBatch.items.length) this.record(st.eraseBatch);
         st.eraseBatch = null;
+        if (st.tempErase) { st.tempErase = false; hideRing(); return; }   // pen button: the picked tool never changed
         if (P.eraser.autoReturn) { P.tool = P.lastDrawTool; this.savePrefs(); this.refreshToolbars(); }
         return;
       }
@@ -1205,7 +1405,7 @@ class PenInk extends Plugin {
       st.stroke = null;
       st.lastPenTime = Date.now();
       if (S.raf) window.cancelAnimationFrame(S.raf);
-      el.paChild.setLive(null);
+      if (el.paChild) el.paChild.setLive(null);
       // Smoothing trails slightly behind the Pencil; finish the line exactly where it lifted.
       if (!S.straight && !S.snapped && S.raw && s.pts.length) {
         const L = s.pts[s.pts.length - 1], w = S.rect.width;
@@ -1214,14 +1414,14 @@ class PenInk extends Plugin {
       // Drop points that don't change the shape: smaller files, faster redraws, same look.
       if (!S.straight && !S.snapped) s.pts = simplify(s.pts, S.rect.width, 0.35, isFountain(s) ? s.width * 2 : 0);
       // A single tap with the highlighter is almost always an accident; a pen dot can be on purpose.
-      if (s.pts.length < 2 && s.kind === 'hl') { el.paChild.draw(); return; }
+      if (s.pts.length < 2 && s.kind === 'hl') { if (el.paChild) el.paChild.draw(); return; }
       const path = el.dataset.paPath, key = el.dataset.paKey;
       const d = this.inkData(path);
-      if (!d) { el.paChild.draw(); return; }
+      if (!d) { if (el.paChild) el.paChild.draw(); return; }
       if (!d.sections[key]) d.sections[key] = [];
       d.sections[key].push(s);
       this.record({ type: 'add', path, key, s });
-      el.paChild.draw();
+      if (el.paChild) el.paChild.draw(); else this.redraw(path, key);
       this.saveInk(path);
     };
     st.onLeave = (e) => { if (e.pointerType !== 'touch') { hideRing(); if (st.laserId == null) st.laserSeen = 0; } };
@@ -1240,8 +1440,9 @@ class PenInk extends Plugin {
     root.addEventListener('pointermove', st.onMove);
     // Lifts are caught on the whole document: if the Pencil comes up outside the note (or iOS
     // drops pointer capture), the stroke still ends instead of merging into the next one.
-    activeDocument.addEventListener('pointerup', st.onUp);
-    activeDocument.addEventListener('pointercancel', st.onUp);
+    st.doc = root.ownerDocument || activeDocument;   // a popout window has its own document
+    st.doc.addEventListener('pointerup', st.onUp);
+    st.doc.addEventListener('pointercancel', st.onUp);
     root.addEventListener('pointerleave', st.onLeave);
     root.addEventListener('click', st.onClick, true);
     root.addEventListener('scroll', st.onScroll, true);
@@ -1267,12 +1468,12 @@ class PenInk extends Plugin {
     r.removeEventListener('touchcancel', st.onTouchEnd, { passive: true });
     r.removeEventListener('pointerdown', st.onDown);
     r.removeEventListener('pointermove', st.onMove);
-    activeDocument.removeEventListener('pointerup', st.onUp);
-    activeDocument.removeEventListener('pointercancel', st.onUp);
+    (st.doc || activeDocument).removeEventListener('pointerup', st.onUp);
+    (st.doc || activeDocument).removeEventListener('pointercancel', st.onUp);
     r.removeEventListener('pointerleave', st.onLeave);
     r.removeEventListener('click', st.onClick, true);
     r.removeEventListener('scroll', st.onScroll, true);
-    r.classList.remove('pa-annotating', 'pa-no-cursor', 'pa-zoomed');
+    r.classList.remove('pa-annotating', 'pa-no-cursor', 'pa-zoomed', 'pa-cur-move', 'pa-cur-rotate', 'pa-cur-nwse', 'pa-cur-nesw');
     if (st.zoomEl) { css(st.zoomEl, { transform: '' }); st.zoomEl.classList.remove('pa-zoom-target'); }   // back to 100%
     this.clearSelection();          // while the session still exists, so its halos get redrawn away
     this.sessions.delete(view);
@@ -1345,7 +1546,7 @@ class PenInk extends Plugin {
     S.active = this.livePiece(S);
     S.group.appendChild(S.active);
     S.raf = 0;
-    S.el.paChild.setLive(S.group, S.s);
+    if (S.el.paChild) S.el.paChild.setLive(S.group, S.s);
   }
 
   livePiece(S) {
@@ -1526,8 +1727,8 @@ class PenInk extends Plugin {
     const s = { kind: 'pen', geom: o.kind, color: o.color, width: o.size, opacity: o.opacity || 1, pts: [], seed: newSeed() };
     if (['dash', 'dot'].includes(o.dash)) s.dash = o.dash;
     if (o.rough) s.rough = o.rough;
-    if (o.edges === 'round' && (o.kind === 'rect' || o.kind === 'triangle')) s.edges = 'round';
-    if (o.fill && ['rect', 'ellipse', 'triangle'].includes(o.kind)) s.fill = o.fill;
+    if (o.edges === 'round' && CORNERED.includes(o.kind)) s.edges = 'round';
+    if (o.fill && FILLABLE.includes(o.kind)) s.fill = o.fill;
     st.shape = { id: e.pointerId, el, rect, s, x0: (e.clientX - rect.left) / rect.s, y0: (e.clientY - rect.top) / rect.s, path: null };
     this.dragShape(st, e);
   }
@@ -1538,18 +1739,18 @@ class PenInk extends Plugin {
     S.s.pts = pts.map(p => [+(p[0] / w).toFixed(4), +p[1].toFixed(1)]);
     S.size = Math.max(...pts.map(p => Math.hypot(p[0] - S.x0, p[1] - S.y0)));
     S.path = makePath(S.s, w);
-    S.el.paChild.setLive(S.path, S.s, makeFill(S.s, w));
+    if (S.el.paChild) S.el.paChild.setLive(S.path, S.s, makeFill(S.s, w));
   }
 
   finishShape(st) {
     const S = st.shape; st.shape = null;
-    S.el.paChild.setLive(null);
-    if (!S.size || S.size < 6) { S.el.paChild.draw(); return; }      // a tap, not a drag
+    if (S.el.paChild) S.el.paChild.setLive(null);
+    if (!S.size || S.size < 6) { this.redraw(S.el.dataset.paPath, S.el.dataset.paKey); return; }      // a tap, not a drag
     const path = S.el.dataset.paPath, key = S.el.dataset.paKey, d = this.inkData(path);
-    if (!d) { S.el.paChild.draw(); return; }
+    if (!d) { this.redraw(S.el.dataset.paPath, S.el.dataset.paKey); return; }
     (d.sections[key] = d.sections[key] || []).push(S.s);
     this.record({ type: 'add', path, key, s: S.s });
-    S.el.paChild.draw();
+    if (S.el.paChild) S.el.paChild.draw(); else this.redraw(S.el.dataset.paPath, S.el.dataset.paKey);
     this.saveInk(path);
   }
 
@@ -1579,7 +1780,7 @@ class PenInk extends Plugin {
       if (batch) batch.items.push(action); else this.record(action);
       changed = true;
     }
-    if (changed) { el.paChild.draw(); this.saveInk(path); }
+    if (changed) { if (el.paChild) el.paChild.draw(); this.saveInk(path); }
   }
 
   // ----- select (internally still called "lasso") -----------------------------------
@@ -1645,6 +1846,28 @@ class PenInk extends Plugin {
 
   pointInBox(box, x, y) { return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom; }
 
+  // What a press at (x, y) grabs on the selection: a corner handle ('nw' | 'ne' | 'sw' | 'se'),
+  // the rotate knob under the box ('rotate'), the inside ('move'), or nothing (null).
+  handleAt(st, x, y) {
+    const b = st.selBox;
+    if (!b) return null;
+    const R = 18;   // generous: a fingertip-sized Pencil target
+    const k = this.knobAt(b);
+    if (Math.hypot(x - k[0], y - k[1]) <= R) return 'rotate';
+    // The nearest corner wins. Inside a small box the corner zones shrink, so there's always
+    // room left in the middle to grab and move it (a thin line's box is only ~15px tall).
+    const inside = this.pointInBox(b, x, y);
+    const reach = inside ? Math.min(R, Math.min(b.right - b.left, b.bottom - b.top) / 3) : R;
+    let best = null, bestD = reach;
+    for (const [id, cx, cy] of [['nw', b.left, b.top], ['ne', b.right, b.top], ['sw', b.left, b.bottom], ['se', b.right, b.bottom]]) {
+      const d = Math.hypot(x - cx, y - cy);
+      if (d <= bestD) { best = id; bestD = d; }
+    }
+    return best || (inside ? 'move' : null);
+  }
+
+  knobAt(b) { return [(b.left + b.right) / 2, b.bottom + KNOB_GAP]; }
+
   showSelection(st) {
     const items = this.selectionItems(st);
     // Drop strokes that no longer exist (undo, Sync) from the selection.
@@ -1661,6 +1884,7 @@ class PenInk extends Plugin {
   }
 
   clearSelection() {
+    for (const st of this.sessions.values()) if (st.preview) this.commitPreview(st);
     if (!this.selected.size) { for (const st of this.sessions.values()) this.updateSelectionBox(st); return; }
     const touched = new Set();
     for (const st of this.sessions.values()) for (const i of this.selectionItems(st)) touched.add(i.path + '\u0000' + i.key);
@@ -1669,15 +1893,58 @@ class PenInk extends Plugin {
     for (const st of this.sessions.values()) this.updateSelectionBox(st);
   }
 
-  startMove(st, e) {
-    const items = this.selectionItems(st);
-    st.moving = { id: e.pointerId, x0: e.clientX, y0: e.clientY, items: items.map(i => { const f = frameOf(i.el); return { ...i, w: f.width, sc: f.s, before: clone(i.s.pts) }; }) };
+  // Drag the selection: `mode` is 'move', a corner ('nw' | 'ne' | 'sw' | 'se': resize, keeping the
+  // proportions, from the opposite corner) or 'rotate' (around the box's center).
+  startMove(st, e, mode = 'move') {
+    const items = this.selectionItems(st), b = st.selBox;
+    const M = { id: e.pointerId, mode, x0: e.clientX, y0: e.clientY, box: { ...b },
+      items: items.map(i => { const f = frameOf(i.el); return { ...i, f, w: f.width, sc: f.s, before: clone(i.s.pts), bw: i.s.width, brot: i.s.rot }; }) };
+    if (mode === 'rotate') {
+      M.c = [(b.left + b.right) / 2, (b.top + b.bottom) / 2];
+      M.a0 = Math.atan2(e.clientY - M.c[1], e.clientX - M.c[0]);
+    } else if (mode !== 'move') {
+      M.anchor = [mode.includes('w') ? b.right : b.left, mode.includes('n') ? b.bottom : b.top];
+      M.d0 = Math.max(1, Math.hypot(e.clientX - M.anchor[0], e.clientY - M.anchor[1]));
+      M.kMin = 16 / Math.max(1, Math.hypot(b.right - b.left, b.bottom - b.top));   // never smaller than ~16px across
+    }
+    st.moving = M;
   }
 
   moveSelection(st, e) {
     const M = st.moving, dx = e.clientX - M.x0, dy = e.clientY - M.y0;
-    for (const it of M.items) it.s.pts = it.before.map(p => { const q = p.slice(); q[0] = +(p[0] + dx / (it.w * it.sc)).toFixed(4); q[1] = +(p[1] + dy / it.sc).toFixed(1); return q; });
-    for (const it of M.items) it.el.paChild.draw();
+    if (M.mode === 'move') {
+      for (const it of M.items) it.s.pts = it.before.map(p => { const q = p.slice(); q[0] = +(p[0] + dx / (it.w * it.sc)).toFixed(4); q[1] = +(p[1] + dy / it.sc).toFixed(1); return q; });
+    } else {
+      // Work in screen space, so a selection spanning several paragraphs (or a zoomed note) turns as one piece.
+      let map, k = 1, deg = 0;
+      if (M.mode === 'rotate') {
+        let a = Math.atan2(e.clientY - M.c[1], e.clientX - M.c[0]) - M.a0;
+        deg = a * 180 / Math.PI;
+        const snap = Math.round(deg / 45) * 45;                  // settle on 0, 45, 90... when close
+        if (Math.abs(deg - snap) < 4) deg = snap;
+        a = deg * Math.PI / 180;
+        const c = Math.cos(a), n = Math.sin(a), [cx, cy] = M.c;
+        map = (X, Y) => [cx + (X - cx) * c - (Y - cy) * n, cy + (X - cx) * n + (Y - cy) * c];
+      } else {
+        k = Math.max(M.kMin, Math.min(8, Math.hypot(e.clientX - M.anchor[0], e.clientY - M.anchor[1]) / M.d0));
+        const [ax, ay] = M.anchor;
+        map = (X, Y) => [ax + (X - ax) * k, ay + (Y - ay) * k];
+      }
+      for (const it of M.items) {
+        const { f } = it;
+        it.s.pts = it.before.map(p => {
+          const [X, Y] = map(p[0] * f.width * f.s + f.left, p[1] * f.s + f.top), q = p.slice();
+          q[0] = +((X - f.left) / (f.width * f.s)).toFixed(4); q[1] = +((Y - f.top) / f.s).toFixed(1);
+          return q;
+        });
+        if (k !== 1) it.s.width = +Math.max(0.5, it.bw * k).toFixed(2);       // lines thicken/thin with the drawing
+        if (deg && it.s.geom === 'ellipse') {
+          const r = (((it.brot || 0) + deg) % 360 + 360) % 360;
+          if (r) it.s.rot = +r.toFixed(1); else delete it.s.rot;
+        }
+      }
+    }
+    for (const el of new Set(M.items.map(it => it.el))) if (el.paChild) el.paChild.draw();
     this.updateSelectionBox(st);
   }
 
@@ -1689,14 +1956,20 @@ class PenInk extends Plugin {
     const changes = [], touched = new Set();
     for (const it of M.items) {
       touched.add(it.el);
-      if (JSON.stringify(it.before) === JSON.stringify(it.s.pts)) continue;
+      if (JSON.stringify(it.before) === JSON.stringify(it.s.pts) && it.bw === it.s.width && it.brot === it.s.rot) continue;
+      // What a drag can change: points, and for resize/rotate the line width and an ellipse's angle.
+      const ell = it.s.geom === 'ellipse';
+      const was = { pts: it.before, width: it.bw, ...(ell ? { rot: it.brot === undefined ? null : it.brot } : {}) };
+      const now = { pts: clone(it.s.pts), width: it.s.width, ...(ell ? { rot: it.s.rot === undefined ? null : it.s.rot } : {}) };
       const r0 = frameOf(it.el);
       const xs = it.s.pts.map(p => p[0] * r0.width * r0.s + r0.left), ys = it.s.pts.map(p => p[1] * r0.s + r0.top);
       const target = this.sectionAt(st.root, (Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2);
       if (target && target !== it.el && target.dataset.paPath === it.path) {
         const r1 = frameOf(target), list = this.strokesFor(it.path, it.key), idx = list.indexOf(it.s);
         const moved = { ...it.s, pts: it.s.pts.map(p => { const q = p.slice(); q[0] = +((p[0] * r0.width * r0.s + r0.left - r1.left) / (r1.width * r1.s)).toFixed(4); q[1] = +((p[1] * r0.s + r0.top - r1.top) / r1.s).toFixed(1); return q; }) };
-        it.s.pts = it.before;                      // the original object stays as it was, for undo
+        Object.assign(it.s, was);                  // the original object stays as it was, for undo
+        if (it.s.rot === null) delete it.s.rot;
+        if (moved.rot == null) delete moved.rot;
         if (idx >= 0) list.splice(idx, 1);
         const d = this.inkData(it.path), nkey = target.dataset.paKey;
         (d.sections[nkey] = d.sections[nkey] || []).push(moved);
@@ -1704,7 +1977,7 @@ class PenInk extends Plugin {
         changes.push({ type: 'erase', path: it.path, key: it.key, s: it.s, index: idx }, { type: 'add', path: it.path, key: nkey, s: moved });
         touched.add(target);
       } else {
-        changes.push({ type: 'edit', path: it.path, key: it.key, s: it.s, before: { pts: it.before }, after: { pts: clone(it.s.pts) } });
+        changes.push({ type: 'edit', path: it.path, key: it.key, s: it.s, before: was, after: now });
       }
       this.saveInk(it.path);
     }
@@ -1730,9 +2003,11 @@ class PenInk extends Plugin {
 
   // Slider support: show a value live while dragging, then commit it as one undo step.
   previewSelection(st, filter, key, value) {
+    // A drag that ended back where it started fires no "change": drop a preview left from an old selection.
+    if (st.preview && (st.preview.key !== key || st.preview.items.some(i => !this.selected.has(i.s)))) this.commitPreview(st);
     if (!st.preview) st.preview = { key, items: this.selectionItems(st).filter(i => filter(i.s)).map(i => ({ ...i, before: i.s[key] === undefined ? null : i.s[key] })) };
     for (const it of st.preview.items) it.s[key] = value;
-    for (const el of new Set(st.preview.items.map(i => i.el))) el.paChild.draw();
+    for (const el of new Set(st.preview.items.map(i => i.el))) if (el.paChild) el.paChild.draw();
   }
 
   commitPreview(st) {
@@ -1791,6 +2066,53 @@ class PenInk extends Plugin {
     this.record(change);
   }
 
+  // Copy (or cut) the selection. Points are kept in px from the selection box's top-left, so
+  // the ink keeps its size when pasted into a paragraph of another width or another note.
+  copySelection(st, cut = false) {
+    const items = this.selectionItems(st), box = this.selectionRect(st);
+    if (!items.length || !box) return false;
+    const s0 = frameOf(items[0].el).s;
+    this.inkClip = { w: (box.right - box.left) / s0, h: (box.bottom - box.top) / s0, n: 0, strokes: items.map(({ el, s }) => {
+      const f = frameOf(el), c = clone(s);
+      c.pts = s.pts.map(p => { const q = p.slice(); q[0] = +((p[0] * f.width * f.s + f.left - box.left) / f.s).toFixed(1); q[1] = +((p[1] * f.s + f.top - box.top) / f.s).toFixed(1); return q; });
+      return c;
+    }) };
+    if (cut) this.deleteSelection(st);
+    this.refreshToolbars();
+    return true;
+  }
+
+  // Paste copied ink in the middle of what's on screen (each repeat nudged down-right), attached to
+  // whichever paragraph it lands on. It comes in selected, with Select on, ready to drag into place.
+  pasteInk(st) {
+    const C = this.inkClip;
+    if (!C || !C.strokes.length) return false;
+    const rr = st.root.getBoundingClientRect(), first = this.sections(st.root)[0], s = first ? frameOf(first).s : 1;
+    const off = 16 * (C.n++ % 8) * s;
+    const left = (rr.left + rr.right) / 2 - (C.w * s) / 2 + off, top = (rr.top + rr.bottom) / 2 - (C.h * s) / 2 + off;
+    const adds = [];
+    for (const c0 of C.strokes) {
+      const c = clone(c0), X = c.pts.map(p => left + p[0] * s), Y = c.pts.map(p => top + p[1] * s);
+      const el = this.sectionAt(st.root, (Math.min(...X) + Math.max(...X)) / 2, (Math.min(...Y) + Math.max(...Y)) / 2);
+      if (!el) continue;
+      const f = frameOf(el), path = el.dataset.paPath, key = el.dataset.paKey, d = this.inkData(path);
+      if (!d) continue;
+      if (c.seed) c.seed = newSeed();
+      c.pts = c.pts.map((p, i) => { const q = p.slice(); q[0] = +((X[i] - f.left) / (f.width * f.s)).toFixed(4); q[1] = +((Y[i] - f.top) / f.s).toFixed(1); return q; });
+      (d.sections[key] = d.sections[key] || []).push(c);
+      adds.push({ type: 'add', path, key, s: c });
+    }
+    if (!adds.length) return false;
+    this.clearSelection();
+    for (const a of adds) this.selected.add(a.s);
+    this.record({ type: 'batch', items: adds });
+    for (const p of new Set(adds.map(a => a.path))) this.saveInk(p);
+    if (this.prefs.tool !== 'lasso') { this.prefs.tool = 'lasso'; this.savePrefs(); }
+    this.refreshToolbars();
+    this.showSelection(st);
+    return true;
+  }
+
   deleteSelection(st) {
     const items = this.selectionItems(st);
     if (!items.length) return;
@@ -1802,7 +2124,7 @@ class PenInk extends Plugin {
       actions.push({ type: 'erase', path: i.path, key: i.key, s: i.s, index: idx });
     }
     this.selected.clear();
-    for (const i of items) { i.el.paChild.draw(); this.saveInk(i.path); }
+    for (const i of items) { if (i.el.paChild) i.el.paChild.draw(); this.saveInk(i.path); }
     if (actions.length) this.record({ type: 'batch', items: actions });   // undo replays these backwards, restoring each index
     this.updateSelectionBox(st);
   }
@@ -1816,10 +2138,20 @@ class PenInk extends Plugin {
   //   {type: 'batch', items: [...]}                     one eraser swipe / lasso action = one undo
   // Undo reverses a change; redo replays it.
 
+  // Undo and redo are per note: undoing in one note never changes another one.
   record(action) {
     this.undoStack.push(action);
-    this.redoStack.length = 0;
+    const paths = this.pathsOf(action), keep = this.redoStack.filter(a => !this.pathsOf(a).some(p => paths.includes(p)));
+    this.redoStack.splice(0, this.redoStack.length, ...keep);
     this.refreshToolbars();
+  }
+
+  pathsOf(a) { return a.type === 'batch' ? a.items.flatMap(i => this.pathsOf(i)) : [a.path]; }
+  activeNotePath() { const v = this.app.workspace.getActiveViewOfType(MarkdownView); return v && v.file ? v.file.path : null; }
+  // Index of the newest step for this note (any note if notePath is null), or -1.
+  lastFor(stack, notePath) {
+    for (let i = stack.length - 1; i >= 0; i--) if (!notePath || this.pathsOf(stack[i]).includes(notePath)) return i;
+    return -1;
   }
 
   applyChange(a, reverse) {
@@ -1849,17 +2181,19 @@ class PenInk extends Plugin {
     this.redraw(a.path, a.key);
   }
 
-  undoLast() {
-    const a = this.undoStack.pop();
-    if (!a) { new Notice('Nothing to undo'); return; }
+  undoLast(notePath = this.activeNotePath()) {
+    const i = this.lastFor(this.undoStack, notePath);
+    if (i < 0) { new Notice('Nothing to undo'); return; }
+    const [a] = this.undoStack.splice(i, 1);
     this.applyChange(a, true);
     this.redoStack.push(a);
     this.afterHistory();
   }
 
-  redoLast() {
-    const a = this.redoStack.pop();
-    if (!a) { new Notice('Nothing to redo'); return; }
+  redoLast(notePath = this.activeNotePath()) {
+    const i = this.lastFor(this.redoStack, notePath);
+    if (i < 0) { new Notice('Nothing to redo'); return; }
+    const [a] = this.redoStack.splice(i, 1);
     this.applyChange(a, false);
     this.undoStack.push(a);
     this.afterHistory();
@@ -1988,6 +2322,7 @@ class PenInk extends Plugin {
     // Shows while zoomed in ("2.5×"); tap to go back to 100%.
     const zoomText = h('span', '', '');
     const zoomBtn = button('Reset zoom', zoomText, () => this.resetZoom(st), 'pa-btn-zoom pa-hidden');
+    const pasteBtn = button('Paste ink', svgIcon(ICONS.paste), () => this.pasteInk(st), 'pa-hidden');
 
     // Favorites: one-tap presets of tool + color + size.
     const favRow = h('div', 'pa-favs');
@@ -2035,8 +2370,9 @@ class PenInk extends Plugin {
     const styleBtn = button('Color and size', h('span', 'pa-opt', svgIcon(ICONS.sliders, 22), chipDot), () => togglePanel());
     styleBtn.setAttribute('title', 'Options: color, size and style');
 
-    const undoBtn = button('Undo', svgIcon(ICONS.undo), () => this.undoLast());
-    const redoBtn = button('Redo', svgIcon(ICONS.redo), () => this.redoLast());
+    const notePath = () => (view.file ? view.file.path : null);
+    const undoBtn = button('Undo', svgIcon(ICONS.undo), () => this.undoLast(notePath()));
+    const redoBtn = button('Redo', svgIcon(ICONS.redo), () => this.redoLast(notePath()));
     const doneIcon = svgIcon(ICONS.check, 22, 2.4);
     doneIcon.classList.add('pa-done-icon');
     const doneBtn = button('Done', [h('span', 'pa-done-text', 'Done'), doneIcon], () => this.stop(view), 'pa-btn-done');
@@ -2050,7 +2386,7 @@ class PenInk extends Plugin {
     grip.setAttribute('aria-label', 'Move toolbar (double-tap to reset)');
     grip.setAttribute('title', 'Drag to move. Double-tap to put it back.');
 
-    row.append(grip, orientBtn, tools.pen, tools.hl, tools.shape, tools.eraser, tools.lasso, tools.laser, zoomBtn, favSep, favRow, sep(), styleBtn, sep(), undoBtn, redoBtn, doneBtn);
+    row.append(grip, orientBtn, tools.pen, tools.hl, tools.shape, tools.eraser, tools.lasso, pasteBtn, tools.laser, zoomBtn, favSep, favRow, sep(), styleBtn, sep(), undoBtn, redoBtn, doneBtn);
 
     // Vertical column along the side of the page (default), or a horizontal row.
     const applyOrientation = () => {
@@ -2121,12 +2457,16 @@ class PenInk extends Plugin {
     ro.observe(st.root);
 
     // ----- selection: dashed box + a small menu (recolor / style / duplicate / layers / delete) -----
-    const selBox = h('div', 'pa-selbox pa-hidden');
+    // Corner handles resize, the knob under the box rotates. They're only drawn here: presses are
+    // matched by position in handleAt(), like the rest of the selection.
+    const selBox = h('div', 'pa-selbox pa-hidden', ...['nw', 'ne', 'sw', 'se'].map(c => h('div', 'pa-handle is-' + c)),
+      h('div', 'pa-knob-stem'), h('div', 'pa-knob', svgIcon(ICONS.rotate, 12)));
     const selMenu = h('div', 'pa-selmenu pa-card pa-ui pa-hidden');
     for (const c of SWATCHES) selMenu.append(button(`Recolor ${c}`, chipOf(c, 'is-tiny'), () => this.recolorSelection(st, c), 'pa-btn-round'));
     const styleSelBtn = button('Style selection', svgIcon(ICONS.sliders, 20), () => toggleSelCard(), 'pa-btn-small');
     selMenu.append(sep(), styleSelBtn,
       button('Duplicate', svgIcon(ICONS.duplicate, 20), () => { closeSelCard(); this.duplicateSelection(st); }, 'pa-btn-small'),
+      button('Copy', svgIcon(ICONS.copy, 20), () => this.copySelection(st), 'pa-btn-small'),
       button('Bring to front', svgIcon(ICONS.front, 20), () => this.reorderSelection(st, true), 'pa-btn-small'),
       button('Send to back', svgIcon(ICONS.back, 20), () => this.reorderSelection(st, false), 'pa-btn-small'),
       button('Delete selection', svgIcon(ICONS.trash, 20), () => { closeSelCard(); this.deleteSelection(st); }, 'pa-btn-small'),
@@ -2148,8 +2488,8 @@ class PenInk extends Plugin {
     const buildSelCard = () => {
       const S = this.selectionItems(st).map(i => i.s);
       const notHl = (s) => !isHighlight(s), lined = (s) => !isHighlight(s) && !isFountain(s);
-      const fillable = (s) => ['rect', 'ellipse', 'triangle'].includes(s.geom), shaped = (s) => !!s.geom;
-      const cornered = (s) => s.geom === 'rect' || s.geom === 'triangle';
+      const fillable = (s) => FILLABLE.includes(s.geom), shaped = (s) => !!s.geom;
+      const cornered = (s) => CORNERED.includes(s.geom);
       const first = (f) => S.find(f);
       const kids = [];
       selPainters = [];
@@ -2199,7 +2539,7 @@ class PenInk extends Plugin {
       show(selMenu, true);
       const rr = st.root.getBoundingClientRect(), mw = selMenu.offsetWidth, mh = selMenu.offsetHeight;
       let my = rect.top - mh - 8;
-      if (my < rr.top + 4) my = rect.bottom + 8;                       // no room above: put it below
+      if (my < rr.top + 4) my = rect.bottom + KNOB_GAP + 18;           // no room above: below, clear of the rotate knob
       const mx = Math.max(rr.left + 4, Math.min(rect.left, rr.right - mw - 4));
       css(selMenu, { maxWidth: (rr.width - 8) + 'px' });
       placeAt(selMenu, mx, my);
@@ -2244,9 +2584,10 @@ class PenInk extends Plugin {
       styleBtn.setAttribute('aria-label', P.tool === 'laser' ? 'No options for the laser' : P.tool === 'lasso' ? 'No options for Select' : P.tool === 'eraser' ? 'Eraser options' : 'Color and size');
       const z = st.zoom ? st.zoom.s : 1;
       show(zoomBtn, z !== 1);
+      show(pasteBtn, !!this.inkClip);
       zoomText.textContent = (Math.round(z * 10) / 10) + '×';
-      undoBtn.classList.toggle('is-dim', !this.undoStack.length);
-      redoBtn.classList.toggle('is-dim', !this.redoStack.length);
+      undoBtn.classList.toggle('is-dim', this.lastFor(this.undoStack, notePath()) < 0);
+      redoBtn.classList.toggle('is-dim', this.lastFor(this.redoStack, notePath()) < 0);
       if (P.tool !== 'eraser') st.hideRing();
       if (P.tool !== 'laser') { st.laserPts = []; st.laserDot = null; }
       st.root.classList.toggle('pa-no-cursor', P.tool === 'laser' || P.tool === 'eraser');   // the ring / dot is the pointer
@@ -2316,7 +2657,7 @@ class PenInk extends Plugin {
         extras.push({ el: h('div', 'pa-seg-wrap', L('Opacity'), op.el), paint: op.paint });
       } else if (tool === 'shape') {
         // Shape picker: a row of icon buttons.
-        const pick = h('div', 'pa-seg');
+        const pick = h('div', 'pa-seg pa-shape-grid');
         const btns = SHAPES.map(k => {
           const b = button(SHAPE_NAMES[k], svgIcon(ICONS[k], 22), () => { P.shape.kind = k; paint(); this.savePrefs(); }, 'pa-btn-shape');
           b.dataset.kind = k;
@@ -2350,7 +2691,7 @@ class PenInk extends Plugin {
         const op = slider(() => S.opacity, (v) => { S.opacity = v; }, () => this.savePrefs());
         extras.push(fill, dash, rough, op, { el: null, paint: () => {
           edges.paint();
-          const cornered = S.kind === 'rect' || S.kind === 'triangle', fillable = ['rect', 'ellipse', 'triangle'].includes(S.kind);
+          const cornered = CORNERED.includes(S.kind), fillable = FILLABLE.includes(S.kind);
           show(edges.el, cornered); show(edgesLabel, cornered);
           show(fill.el, fillable); show(fillLabel, fillable);
         } });

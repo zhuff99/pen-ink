@@ -32,16 +32,17 @@ It's made for the iPad and Apple Pencil, and it works just as well with a mouse 
 
 <img src="https://raw.githubusercontent.com/zhuff99/pen-ink/main/assets/readme-shapes.png" alt="The Shapes options: shape, color, fill, size, line style, sloppiness and opacity" width="100%">
 
-Rectangles, ellipses, triangles, lines and arrows. Press and drag. Near-squares snap to squares and near-circles to
-circles. Give them a fill, pick clean, sketchy or rough lines, choose sharp or round corners, and set the opacity. They
+Rectangles, ellipses, triangles, diamonds, pentagons, hexagons, stars, lines and arrows. Press and drag. Near-squares
+snap to squares and near-circles to circles. Give them a fill, pick clean, sketchy or rough lines, choose sharp or round corners, and set the opacity. They
 look like they belong in a notebook, not a slide deck.
 
 ## Select, restyle, rearrange
 
 <img src="https://raw.githubusercontent.com/zhuff99/pen-ink/main/assets/readme-select.png" alt="A selected shape with its menu and Style card open" width="100%">
 
-Draw a loop around any ink to pick it up. Then move it, change its color, restyle its width, line, fill or edges,
-duplicate it, bring it to the front, send it back, or delete it.
+Draw a loop around any ink to pick it up. Then move it, resize it from a corner, turn it with the rotate knob, change
+its color, restyle its width, line, fill or edges, duplicate it, bring it to the front, send it back, or delete it.
+**Copy** it and **paste** it anywhere, in the same note or another one (Cmd/Ctrl + C, X and V work on a Mac too).
 
 ## At home on the iPad
 
@@ -52,7 +53,8 @@ duplicate it, bring it to the front, send it back, or delete it.
 - **A toolbar that gets out of the way.** It docks as a column on the side; drag it anywhere or flip it into a row.
 - **Laser pointer** with a fading trail for walking someone through a note. It's never saved.
 
-On a Mac, a mouse draws, and a trackpad pinch or Ctrl/Cmd + scroll zooms.
+On a Mac, a mouse draws, and a trackpad pinch or Ctrl/Cmd + scroll zooms. With an S Pen, Surface or Wacom pen, the
+eraser end or a held side button erases without switching tools.
 
 ## Your notes stay yours
 
@@ -109,6 +111,22 @@ every device. iCloud, Dropbox and Git sync them by default.
 
 Pen Ink works in reading view, where the page holds still under your Pencil. Turning on annotation mode switches the
 note to reading view for you.
+</details>
+
+<details>
+<summary><b>My Pencil strokes turn into typed text, or a scribble deletes something</b></summary>
+
+That's iPadOS **Scribble**, which turns handwriting in text fields into typing. Pen Ink draws in reading view, where
+there's no text field, so Scribble normally stays out of the way. If it ever interferes (for example with a theme or
+another plugin that makes the note editable), turn it off in **iPad Settings → Apple Pencil → Scribble**.
+</details>
+
+<details>
+<summary><b>Can I print or export a note with its ink?</b></summary>
+
+Yes. Use Obsidian's own **Export to PDF** (or print): your highlights, pen ink and shapes come along, and the toolbar
+doesn't. Ink is placed by paragraph, so if the PDF page is much narrower than your screen and a long paragraph wraps
+onto more lines, marks inside that paragraph can sit a little off from their words.
 </details>
 
 <details>
