@@ -1260,6 +1260,117 @@
       plugin.prefs.smoothing = 30;
     }
 
+    // ===== ink follows small edits; rewritten paragraphs can bring their ink back =====
+    {
+      const { blocks, edit } = window.__pi;
+      const original = [...blocks], d = plugin.inkData(NOTE);
+      const S = (k) => d.sections[k] || [];
+      const hidden = () => (plugin.hiddenKeys ? plugin.hiddenKeys(NOTE) : ['(no hiddenKeys)']);   // so a run on older code reports, not crashes
+      const elFor = (start) => [...document.querySelectorAll('[data-pa-key]')].find(e => e.textContent.startsWith(start));
+      const drawOn = async (start) => {
+        const t = elFor(start); t.scrollIntoView({ block: 'center' }); await sleep(60);
+        const r = t.getBoundingClientRect();
+        plugin.prefs.tool = 'pen';
+        drawPts([[r.left + 60, r.top + 10], [r.left + 140, r.top + 14], [r.left + 220, r.top + 10]]);
+        return plugin.undoStack[plugin.undoStack.length - 1].key;
+      };
+      const inkShown = (start) => { const e = elFor(start); return !!(e && e.querySelector('.pa-layer-ink path')); };
+      // Earlier sync checks left ink under made-up keys (STALE, LATE...) that no paragraph has: those
+      // really are hidden. Every real paragraph's ink must not be.
+      const fake = hidden();
+      check('edits: no paragraph\'s ink counts as hidden before any edit', fake.length > 0 && fake.every(k => /^[A-Z]+$/.test(k)), fake);
+      for (const k of fake) delete d.sections[k];
+      for (const k of ['STALE', 'NEWFILE', 'LATE']) delete d.sections[k];
+      const i5 = blocks.findIndex(b => b.startsWith('Paragraph 5.'));
+      const k1 = await drawOn('Paragraph 5.'), s1 = d.sections[k1][d.sections[k1].length - 1], n1 = d.sections[k1].length;
+      // A typo fix: the ink moves to the new version of the paragraph.
+      let nb = [...blocks]; nb[i5] = nb[i5].replace('quick brown', 'quikc brown');
+      window.__notices = [];
+      await edit(nb); await sleep(30);
+      const e2 = elFor('Paragraph 5.'), k2 = e2.dataset.paKey;
+      check('edits: a typo fix keeps the paragraph\'s ink', k2 !== k1 && !d.sections[k1] && S(k2).length === n1 && S(k2).includes(s1), [k1, k2]);
+      check('…and it shows on the edited paragraph', inkShown('Paragraph 5.'));
+      check('…with no "hidden" notice', !(window.__notices || []).some(n => /hid the ink/.test(n)), window.__notices);
+      await sleep(700);
+      const disk = JSON.parse(files.get('Annotations/Folder/Long test note.json')).sections;
+      check('…and is saved under the new paragraph', disk[k2] && disk[k2].length === n1 && !disk[k1], Object.keys(disk).length);
+      // Undo still finds the stroke after it moved.
+      plugin.undoLast();
+      check('…undo still removes the moved stroke', S(k2).length === n1 - 1 && !inkShown('Paragraph 5.') === (n1 === 1));
+      plugin.redoLast();
+      check('…and redo puts it back', S(k2).includes(s1));
+      // Re-rendered before Obsidian re-indexed (the other order): still drawn.
+      nb = [...blocks]; nb[i5] = nb[i5].replace('quikc brown', 'quick brown') + ' One more sentence.';
+      await edit(nb, true); await sleep(30);
+      const k3 = elFor('Paragraph 5.').dataset.paKey;
+      check('edits: an added sentence keeps the ink (even when the page redraws first)', d.sections[k3] && S(k3).includes(s1) && inkShown('Paragraph 5.'));
+      // Editing another paragraph leaves this ink alone.
+      const i7 = blocks.findIndex(b => b.startsWith('Paragraph 7.'));
+      nb = [...blocks]; nb[i7] = nb[i7] + ' Edited.';
+      await edit(nb); await sleep(30);
+      check('edits: changing another paragraph leaves the ink alone', d.sections[k3] && S(k3).includes(s1) && hidden().length === 0);
+      // A real rewrite: hidden, with a notice that can bring it back.
+      window.__notices = []; window.__noticeEls = [];
+      nb = [...blocks]; nb[i5] = 'Something completely new about owls at midnight.';
+      await edit(nb); await sleep(30);
+      check('edits: a rewritten paragraph hides its ink', hidden().length === 1 && !inkShown('Something completely new'), hidden());
+      check('…and says so', (window.__notices || []).some(n => /hid the ink on a paragraph you rewrote/.test(n)), window.__notices);
+      const cmd = plugin.commands.find(c => c.id === 'recover-hidden-ink');
+      check('…"Bring back hidden ink" is offered', cmd && cmd.checkCallback(true) === true);
+      const frag = (window.__noticeEls || []).find(n => n && n.querySelector && n.querySelector('.pa-notice-btn'));
+      const before = d.sections[k3] ? [...d.sections[k3]] : [];
+      if (frag) frag.querySelector('.pa-notice-btn').click();
+      await sleep(80);
+      const shownKeys = new Set([...document.querySelectorAll('[data-pa-key]')].map(e => e.dataset.paKey));
+      const placed = [...plugin.selected].every(x => Object.keys(d.sections).some(k => shownKeys.has(k) && d.sections[k].includes(x)));
+      check('…the notice\'s button brings it back, selected', hidden().length === 0 && before.length > 0 && plugin.selected.size === before.length && placed, [hidden(), plugin.selected.size, before.length]);
+      const box = document.querySelector('.pa-selbox');
+      const sr = box && box.getBoundingClientRect(), rr = view.contentEl.getBoundingClientRect();
+      check('…in the middle of the screen', sr && sr.top > rr.top && sr.bottom < rr.bottom, sr && [sr.top, sr.bottom, rr.top, rr.bottom]);
+      check('…with the command no longer offered', !!cmd && cmd.checkCallback(true) === false);
+      plugin.undoLast();
+      check('…one undo hides it again', hidden().length === 1 && S(k3).length === before.length);
+      plugin.redoLast();
+      check('…and redo brings it back again', hidden().length === 0);
+      plugin.clearSelection();
+      // Deleting a paragraph hides its ink; putting the paragraph back shows it again.
+      const k7 = await drawOn('Paragraph 7.');
+      const s7 = d.sections[k7][S(k7).length - 1];
+      const withP7 = [...blocks];
+      nb = blocks.filter(b => !b.startsWith('Paragraph 7.'));
+      await edit(nb); await sleep(30);
+      check('edits: a deleted paragraph\'s ink is hidden', hidden().includes(k7));
+      await edit(withP7); await sleep(30);
+      check('…and shows again when the paragraph comes back', hidden().length === 0 && S(k7).includes(s7) && inkShown('Paragraph 7.'));
+      // An edit that came through Sync: left to the device it was typed on.
+      const k9 = await drawOn('Paragraph 9.'), s9 = d.sections[k9][d.sections[k9].length - 1];
+      const i9 = blocks.findIndex(b => b.startsWith('Paragraph 9.'));
+      nb = [...blocks]; nb[i9] = nb[i9].replace('lazy', 'sleepy');
+      window.__notices = [];
+      await edit(nb, false, true); await sleep(30);
+      check('edits: an edit from another device doesn\'t move ink here (that device does)', S(k9).includes(s9) && !S(elFor('Paragraph 9.').dataset.paKey).includes(s9) && !(window.__notices || []).some(n => /hid the ink/.test(n)));
+      nb = [...blocks]; nb[i9] = original[i9]; await edit(nb); await sleep(30);
+      check('…and the ink is back once the text is', inkShown('Paragraph 9.'));
+      // A look-alike paragraph somewhere else doesn't take the ink.
+      nb = blocks.filter(b => !b.startsWith('Paragraph 9.'));
+      const at3 = nb.findIndex(b => b.startsWith('Paragraph 3.'));
+      nb.splice(at3, 0, original[i9].replace('lazy', 'sleepy'));
+      await edit(nb); await sleep(30);
+      check('edits: a look-alike paragraph in another spot doesn\'t take the ink', S(k9).includes(s9) && hidden().includes(k9));
+      await edit(original); await sleep(30);
+      check('…and putting the paragraph back shows its ink', inkShown('Paragraph 9.') && S(k9).includes(s9));
+      // Two edits right after each other (the second arrives before the first is handled).
+      const k8 = await drawOn('Paragraph 8.'), s8 = d.sections[k8][d.sections[k8].length - 1];
+      const i8 = blocks.findIndex(b => b.startsWith('Paragraph 8.'));
+      const nA = [...blocks]; nA[i8] = nA[i8].replace('lazy', 'lazzy');
+      const nB = [...nA]; nB[i8] = nB[i8].replace('few more', 'few more more');
+      const p1 = edit(nA), p2 = edit(nB); await p1; await p2; await sleep(30);
+      const k8b = elFor('Paragraph 8.').dataset.paKey;
+      check('edits: two quick edits in a row keep the ink', S(k8b).includes(s8) && inkShown('Paragraph 8.'), k8b);
+      await edit(original); await sleep(30);
+      await sleep(700);
+    }
+
     // 11. Done removes the toolbar.
     bar().querySelector('[aria-label="Done"]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
     check('done closes annotation mode', !bar() && !plugin.sessions.has(view));

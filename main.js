@@ -103,6 +103,66 @@ function sameInk(a, b) {
   return norm(a) === norm(b);
 }
 
+// Every section of a note as key -> its text, keyed exactly like the post-processor does.
+// null when Obsidian hasn't indexed the note yet.
+function noteSections(text, sections) {
+  if (typeof text !== 'string' || !sections || !sections.length) return null;
+  const lines = text.split('\n'), out = new Map();
+  for (const sec of sections) {
+    if (!sec.position) continue;
+    const a = sec.position.start.line, src = lines.slice(a, sec.position.end.line + 1).join('\n').trim();
+    if (!src) continue;
+    const n = repeatIndex({ text, lineStart: a }, src, sections);
+    out.set(hash(src) + (n ? '~' + n : ''), src);
+  }
+  return out;
+}
+
+// How alike two paragraphs are, 0 to 1 (shared pairs of letters). A fixed typo or an added
+// sentence scores high; a different paragraph scores low.
+function similarity(a, b) {
+  a = a.toLowerCase().replace(/\s+/g, ' '); b = b.toLowerCase().replace(/\s+/g, ' ');
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const m = new Map();
+  for (let i = 0; i < a.length - 1; i++) { const g = a.substr(i, 2); m.set(g, (m.get(g) || 0) + 1); }
+  let hit = 0;
+  for (let i = 0; i < b.length - 1; i++) { const g = b.substr(i, 2), n = m.get(g); if (n) { hit++; m.set(g, n - 1); } }
+  return (2 * hit) / (a.length + b.length - 2);
+}
+
+// Where each changed paragraph sits: between which unchanged neighbors (keys in both versions).
+function slots(cur, other) {
+  const keys = [...cur.keys()], out = new Map();
+  let prev = '^';
+  for (let i = 0; i < keys.length; i++) {
+    if (other.has(keys[i])) { prev = keys[i]; continue; }
+    let next = '$';
+    for (let j = i + 1; j < keys.length; j++) if (other.has(keys[j])) { next = keys[j]; break; }
+    out.set(keys[i], prev + '|' + next);
+  }
+  return out;
+}
+
+// A note was edited: which inked paragraphs became which new ones. A paragraph that's gone and
+// has ink goes to the most alike new paragraph in the same spot (between the same unchanged
+// neighbors), one each, if they're alike enough. Unrelated English text scores up to ~0.55.
+const MATCH = 0.6;
+function matchEdits(before, after, hasInk) {
+  const gone = [...before.keys()].filter(k => !after.has(k) && hasInk(k));
+  const fresh = [...after.keys()].filter(k => !before.has(k) && !hasInk(k));
+  const sb = slots(before, after), sa = slots(after, before), pairs = [];
+  for (const g of gone) for (const f of fresh) {
+    if (sb.get(g) !== sa.get(f)) continue;
+    const sc = similarity(before.get(g), after.get(f));
+    if (sc >= MATCH) pairs.push([sc, g, f]);
+  }
+  pairs.sort((x, y) => y[0] - x[0]);
+  const used = new Set(), moves = [];
+  for (const [, g, f] of pairs) if (!used.has(g) && !used.has(f)) { used.add(g); used.add(f); moves.push([g, f]); }
+  return { moves, lost: gone.filter(g => !used.has(g)) };
+}
+
 const isColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
@@ -731,6 +791,7 @@ class SectionChild extends MarkdownRenderChild {
     el.dataset.paKey = this.key;
     el.dataset.paPath = this.notePath;
     el.paChild = this;
+    this.plugin.sawKey(this.notePath, this.key);
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(el);
     // Draw right away when the ink is already loaded: Export to PDF renders the note into a fresh
@@ -835,6 +896,11 @@ class PenInk extends Plugin {
     this.redoStack = [];
     this.saveFails = new Map();    // notePath -> failed attempts to read/write the ink file
     this.writing = new Map();      // notePath -> JSON being written right now
+    this.noteText = new Map();     // notePath -> its sections (key -> text) as last seen, to follow edits
+    this.seenKeys = new Map();     // notePath -> keys rendered since launch (and not edited away since)
+    this.hiddenNotice = null;      // { notice, at } of the last "ink is hidden" notice
+    this.lostKeys = new Map();     // notePath -> keys whose ink an edit hid (what the notice brings back)
+    this.editQueue = new Map();    // notePath -> the edit being followed (one at a time, in order)
     this.prefsTimer = null;
     this.prefs = mergePrefs(await this.loadData());
 
@@ -879,6 +945,12 @@ class PenInk extends Plugin {
       if (!checking) this.pasteInk(this.sessions.get(view));
       return true;
     }});
+    this.addCommand({ id: 'recover-hidden-ink', name: 'Bring back hidden ink', checkCallback: (checking) => {
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!view || !view.file || !this.hiddenKeys(view.file.path).length) return false;
+      if (!checking) { const j = this.justHidden(view.file.path); this.recoverHidden(view, j.length ? j : null); }
+      return true;
+    }});
     // Cmd/Ctrl + C, X, V while marking up. Only when there's ink to act on, and never while typing
     // in a field, so normal copy and paste keep working everywhere else.
     this.registerDomEvent(activeDocument, 'keydown', (e) => {
@@ -915,6 +987,7 @@ class PenInk extends Plugin {
 
     this.registerEvent(this.app.vault.on('rename', async (file, oldPath) => {
       if (!(file instanceof TFile) || !oldPath.endsWith('.md')) return;
+      for (const m of [this.noteText, this.seenKeys, this.lostKeys]) if (m.has(oldPath)) { m.set(file.path, m.get(oldPath)); m.delete(oldPath); }
       try {
         if (this.saveTimers.has(oldPath)) await this.writeInk(oldPath);   // save under the old name first
         const from = this.dataPath(oldPath), to = this.dataPath(file.path), src = this.inkFile(from), dest = this.inkFile(to);
@@ -948,6 +1021,17 @@ class PenInk extends Plugin {
         for (const a of [...this.undoStack, ...this.redoStack]) retarget(a);
       } catch (e) { console.error('Pen Ink: could not move ink for renamed note', oldPath, e); }
     }));
+
+    // A note was edited: move ink along with paragraphs that only changed a little.
+    if (this.app.metadataCache && this.app.metadataCache.on) {
+      this.registerEvent(this.app.metadataCache.on('changed', (file, data, cache) => this.onNoteChanged(file, data, cache)));
+    }
+    // Notes opened straight into editing (no reading view yet) still need a "before" to compare to.
+    const watchNote = (file) => {
+      if (file instanceof TFile && file.path.endsWith('.md') && !this.noteText.has(file.path) && this.inkFile(this.dataPath(file.path))) this.snapshot(file.path);
+    };
+    this.registerEvent(this.app.workspace.on('file-open', watchNote));
+    this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves(leaf => { if (leaf.view instanceof MarkdownView) watchNote(leaf.view.file); }));
 
     // Ink changed on another device (Obsidian Sync): reload it so we never save stale data over it.
     this.registerEvent(this.app.vault.on('modify', (file) => this.onInkFileChanged(file)));
@@ -1008,7 +1092,165 @@ class PenInk extends Plugin {
     if (this.cache.has(notePath)) return Promise.resolve(this.cache.get(notePath));
     const p = this.readInkFile(notePath).then(data => { this.cache.set(notePath, data); return data; });
     this.cache.set(notePath, p);
+    if (!this.noteText.has(notePath)) this.snapshot(notePath);
     return p;
+  }
+
+  // ----- following edits ---------------------------------------------------
+  // Ink is stored per paragraph text, so editing a paragraph used to hide its ink. Now: when a
+  // paragraph with ink changes only a little (a typo, an added sentence), the ink moves to the
+  // new version. Bigger rewrites keep it hidden (it may not line up), with a way to bring it back.
+
+  // Read the note's sections now (in line with the edits being followed, never in between).
+  snapshot(notePath) {
+    const run = async () => {
+      const file = this.app.vault.getAbstractFileByPath(notePath), mc = this.app.metadataCache;
+      if (!(file instanceof TFile) || !mc || !mc.getCache || !this.app.vault.cachedRead) return;
+      try {
+        const text = await this.app.vault.cachedRead(file), meta = mc.getCache(notePath), secs = meta && meta.sections;
+        // The index may lag behind the text for a moment: then its line numbers don't fit. Skip it.
+        if (!secs || secs.some(x => x.position && typeof x.position.end.offset === 'number' && x.position.end.offset > text.length)) return;
+        const out = noteSections(text, secs);
+        if (out) this.noteText.set(notePath, out);
+      } catch (e) { /* not readable right now: no snapshot */ }
+    };
+    const q = (this.editQueue.get(notePath) || Promise.resolve()).then(run).catch(() => {});
+    this.editQueue.set(notePath, q);
+    return q;
+  }
+
+  // Edited here: the note is open in a pane on this device (any mode: Obsidian can index an edit
+  // just after you switch to reading view). Edits to notes that aren't open, like ones arriving
+  // through Sync, are left alone: the device they were typed on moves the ink and syncs that.
+  openHere(notePath) {
+    let open = false;
+    this.app.workspace.iterateAllLeaves(leaf => { const v = leaf.view; if (v instanceof MarkdownView && v.file && v.file.path === notePath) open = true; });
+    return open;
+  }
+
+  sawKey(notePath, key) {
+    if (!this.seenKeys.has(notePath)) this.seenKeys.set(notePath, new Set());
+    this.seenKeys.get(notePath).add(key);
+  }
+
+  // One edit at a time per note, in order: each compares against the one before it.
+  onNoteChanged(file, data, cache) {
+    if (!(file instanceof TFile) || !file.path.endsWith('.md')) return Promise.resolve();
+    const notePath = file.path, local = this.openHere(notePath), run = () => this.followEdit(notePath, data, cache, local);
+    const q = (this.editQueue.get(notePath) || Promise.resolve()).then(run)
+      .catch(e => console.error('Pen Ink: could not follow an edit in', notePath, e));
+    this.editQueue.set(notePath, q);
+    return q;
+  }
+
+  async followEdit(notePath, data, cache, local) {
+    const before = this.noteText.get(notePath), hasInk = this.cache.has(notePath) || !!this.inkFile(this.dataPath(notePath));
+    if (!before && !hasInk) return;   // nothing to follow: don't keep the text of every note around
+    const after = noteSections(data, cache && cache.sections);
+    if (!after) return;
+    this.noteText.set(notePath, after);
+    if (!before) return;
+    const seen = this.seenKeys.get(notePath);
+    if (seen) for (const k of before.keys()) if (!after.has(k)) seen.delete(k);
+    if (!hasInk || !local) return;
+    const d = await this.loadInk(notePath);
+    const { moves, lost } = matchEdits(before, after, k => !!(d.sections[k] && d.sections[k].length));
+    if (moves.length) {
+      const retarget = (a, from, to) => { if (a.type === 'batch') a.items.forEach(i => retarget(i, from, to)); else if (a.path === notePath && a.key === from) a.key = to; };
+      for (const [from, to] of moves) {
+        d.sections[to] = d.sections[from];
+        delete d.sections[from];
+        for (const a of [...this.undoStack, ...this.redoStack]) retarget(a, from, to);
+        this.redraw(notePath, from);
+        this.redraw(notePath, to);
+      }
+      this.saveInk(notePath);
+    }
+    if (lost.length) {
+      if (!this.lostKeys.has(notePath)) this.lostKeys.set(notePath, new Set());
+      for (const k of lost) this.lostKeys.get(notePath).add(k);
+      this.tellHidden(notePath);
+    }
+  }
+
+  // Paragraph keys with ink that no paragraph of the note has anymore. A key Obsidian rendered
+  // since launch, and that no edit took away, always counts as present.
+  hiddenKeys(notePath) {
+    const d = this.inkData(notePath), cur = this.noteText.get(notePath);
+    if (!d || !cur) return [];
+    const seen = this.seenKeys.get(notePath) || new Set();
+    return Object.keys(d.sections).filter(k => d.sections[k] && d.sections[k].length && !cur.has(k) && !seen.has(k));
+  }
+
+  // Hidden ink that an edit seen here took away (what the notice offers to bring back).
+  justHidden(notePath) {
+    const lost = this.lostKeys.get(notePath);
+    return lost ? this.hiddenKeys(notePath).filter(k => lost.has(k)) : [];
+  }
+
+  tellHidden(notePath) {
+    const n = this.justHidden(notePath).length;
+    if (!n) return;
+    const H = this.hiddenNotice;
+    if (H && Date.now() - H.at < 8000 && H.notice.hide) H.notice.hide();   // one notice, updated, while deleting a few
+    const msg = `Pen Ink hid the ink on ${n === 1 ? 'a paragraph' : n + ' paragraphs'} you rewrote or deleted, since it may not line up anymore.`;
+    let content = msg;
+    if (activeDocument.createDocumentFragment) {
+      content = activeDocument.createDocumentFragment();
+      content.append(msg + ' ');
+      const b = h('button', 'pa-notice-btn', 'Bring it back');
+      b.addEventListener('click', () => {
+        const v = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (v && v.file && v.file.path === notePath) this.recoverHidden(v, this.justHidden(notePath));
+        else new Notice('Open the note, then run "Pen Ink: Bring back hidden ink".');
+      });
+      content.append(b);
+    }
+    this.hiddenNotice = { notice: new Notice(content, 10000), at: Date.now() };
+  }
+
+  // Put hidden ink back on the page: stacked in the middle of the screen, selected, so it can be
+  // dragged where it belongs (or deleted). One undo puts it back into hiding.
+  // `only`: just these keys (the notice's); otherwise all hidden ink in the note.
+  async recoverHidden(view, only) {
+    if (!view.file) return false;
+    const notePath = view.file.path;
+    if (!this.sessions.has(view)) await this.start(view);
+    const st = this.sessions.get(view);
+    if (!st) return false;
+    await this.loadInk(notePath);
+    await this.snapshot(notePath);
+    for (let i = 0; i < 20 && !this.sections(st.root).length; i++) await new Promise(r => window.setTimeout(r, 50));   // just switched to reading view
+    const keys = this.hiddenKeys(notePath).filter(k => !only || only.includes(k)), d = this.inkData(notePath), first = this.sections(st.root)[0];
+    if (!keys.length || !d || !first) { new Notice('Pen Ink: no hidden ink in this note.'); return false; }
+    const W = frameOf(first).width, GAP = 24, strokes = [], erased = [];
+    let y = 0, w = 0;
+    for (const k of keys) {
+      const list = d.sections[k].filter(s => s.pts && s.pts.length);
+      if (!list.length) continue;
+      let x0 = Infinity, y0 = Infinity, y1 = -Infinity;   // loops, not Math.min(...): long strokes have many points
+      for (const s of list) for (const p of s.pts) { x0 = Math.min(x0, p[0] * W); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }
+      for (const s of list) {
+        const c = clone(s);
+        c.pts = s.pts.map(p => { const q = p.slice(); q[0] = +(p[0] * W - x0).toFixed(1); q[1] = +(p[1] - y0 + y).toFixed(1); w = Math.max(w, q[0]); return q; });
+        strokes.push(c);
+        const i = d.sections[k].indexOf(s);
+        d.sections[k].splice(i, 1);
+        erased.push({ type: 'erase', path: notePath, key: k, s, index: i });
+      }
+      y += y1 - y0 + GAP;
+    }
+    const placed = strokes.length ? this.placeClip(st, { w, h: y - GAP, strokes }, 0, erased, true) : 0;
+    if (placed !== strokes.length || !placed) {
+      // Every piece must land in this note, or nothing moves (one undo step to take back).
+      if (placed) { this.undoLast(notePath); this.redoStack.pop(); }
+      else for (const a of [...erased].reverse()) this.applyChange(a, true);
+      new Notice('Pen Ink: could not bring the hidden ink back here.');
+      return false;
+    }
+    this.saveInk(notePath);
+    new Notice(`Pen Ink brought back the ink from ${keys.length === 1 ? 'a paragraph' : keys.length + ' paragraphs'}. It's selected: drag it into place, or delete it.`);
+    return true;
   }
 
   inkData(notePath) { const d = this.cache.get(notePath); return d && !(d instanceof Promise) ? d : null; }
@@ -1178,9 +1420,10 @@ class PenInk extends Plugin {
   // title, the Properties block or blank space (none of which are markdown sections), it's
   // attached to the closest paragraph and drawn where it was put. (It used to need a section
   // within 80px, so the top few inches of a note with Properties couldn't be drawn on.)
-  sectionAt(root, x, y) {
+  sectionAt(root, x, y, notePath = null) {
     let best = null, bestDist = Infinity;
     for (const el of this.sections(root)) {
+      if (notePath && el.dataset.paPath !== notePath) continue;   // e.g. skip an embedded note's paragraphs
       const r = el.getBoundingClientRect();
       if (y >= r.top && y <= r.bottom) return el;
       const d = Math.min(Math.abs(y - r.top), Math.abs(y - r.bottom));
@@ -2147,30 +2390,37 @@ class PenInk extends Plugin {
   pasteInk(st) {
     const C = this.inkClip;
     if (!C || !C.strokes.length) return false;
+    return this.placeClip(st, C, 16 * (C.n++ % 8));
+  }
+
+  // Drop clip ink onto the page, centered on screen (plus `nudge` px). `before` are changes that go
+  // into the same undo step; `keepSeed` keeps sketchy lines exactly as they were.
+  placeClip(st, C, nudge, before = [], keepSeed = false) {
+    if (!C || !C.strokes.length) return false;
     const rr = st.root.getBoundingClientRect(), first = this.sections(st.root)[0], s = first ? frameOf(first).s : 1;
-    const off = 16 * (C.n++ % 8) * s;
+    const off = nudge * s;
     const left = (rr.left + rr.right) / 2 - (C.w * s) / 2 + off, top = (rr.top + rr.bottom) / 2 - (C.h * s) / 2 + off;
     const adds = [];
     for (const c0 of C.strokes) {
       const c = clone(c0), X = c.pts.map(p => left + p[0] * s), Y = c.pts.map(p => top + p[1] * s);
-      const el = this.sectionAt(st.root, (Math.min(...X) + Math.max(...X)) / 2, (Math.min(...Y) + Math.max(...Y)) / 2);
+      const el = this.sectionAt(st.root, (Math.min(...X) + Math.max(...X)) / 2, (Math.min(...Y) + Math.max(...Y)) / 2, keepSeed ? st.view.file.path : null);
       if (!el) continue;
       const f = frameOf(el), path = el.dataset.paPath, key = el.dataset.paKey, d = this.inkData(path);
-      if (!d) continue;
-      if (c.seed) c.seed = newSeed();
+      if (!d || (keepSeed && path !== st.view.file.path)) continue;   // recovered ink stays in its own note
+      if (c.seed && !keepSeed) c.seed = newSeed();
       c.pts = c.pts.map((p, i) => { const q = p.slice(); q[0] = +((X[i] - f.left) / (f.width * f.s)).toFixed(4); q[1] = +((Y[i] - f.top) / f.s).toFixed(1); return q; });
       (d.sections[key] = d.sections[key] || []).push(c);
       adds.push({ type: 'add', path, key, s: c });
     }
-    if (!adds.length) return false;
+    if (!adds.length) return 0;
     this.clearSelection();
     for (const a of adds) this.selected.add(a.s);
-    this.record({ type: 'batch', items: adds });
+    this.record({ type: 'batch', items: [...before, ...adds] });
     for (const p of new Set(adds.map(a => a.path))) this.saveInk(p);
     if (this.prefs.tool !== 'lasso') { this.prefs.tool = 'lasso'; this.savePrefs(); }
     this.refreshToolbars();
     this.showSelection(st);
-    return true;
+    return adds.length;
   }
 
   deleteSelection(st) {

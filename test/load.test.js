@@ -47,7 +47,7 @@ globalThis.window = globalThis;
   assert.strictEqual(typeof Object.getOwnPropertyDescriptor(PenInk.prototype, 'load'), 'undefined', 'plugin must not override load()');
   assert.strictEqual(typeof Object.getOwnPropertyDescriptor(PenInk.prototype, 'unload'), 'undefined', 'plugin must not override unload()');
   assert.strictEqual(plugin.postProcessors.length, 1, 'post-processor registered');
-  assert.deepStrictEqual(plugin.commands.map(c => c.id), ['toggle', 'undo', 'redo', 'reset-zoom', 'copy-ink', 'cut-ink', 'paste-ink']);
+  assert.deepStrictEqual(plugin.commands.map(c => c.id), ['toggle', 'undo', 'redo', 'reset-zoom', 'copy-ink', 'cut-ink', 'paste-ink', 'recover-hidden-ink']);
   assert.strictEqual(actions.length, 1, 'button added to the view header');
   assert.strictEqual(actions[0].icon, 'pen-ink-marker', 'header uses our own icon, not the edit pencil');
   assert.ok(/<path d="/.test(mock.icons['pen-ink-marker']), 'custom icon registered');

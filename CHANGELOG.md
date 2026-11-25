@@ -2,6 +2,14 @@
 
 Newest first. Updates arrive through **Settings → Community plugins → Check for updates**.
 
+## 1.15.0
+
+- **Ink follows your edits.** Fix a typo or add a sentence to a paragraph and its ink stays on it. Before, any change
+  to a paragraph's text hid its ink.
+- **Bring back hidden ink.** Rewrite or delete a paragraph and Pen Ink tells you its ink is hidden, with a button to
+  bring it back: it appears in the middle of the screen, selected, ready to drag into place or delete. For edits made
+  outside Obsidian, run **Pen Ink: Bring back hidden ink** from the command palette. Undo puts it back into hiding.
+
 ## 1.14.1
 
 - The eraser now reaches every part of a drawing. Ink that hung over a neighboring paragraph (like a circle around a

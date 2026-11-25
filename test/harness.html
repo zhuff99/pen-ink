@@ -94,14 +94,18 @@
     else blocks.push('Paragraph ' + i + '. The quick brown fox jumps over the lazy dog, then reads a few more words so the line wraps nicely across the page width.');
   }
   if (!DEMO) blocks.push('Same words twice.', 'Same words twice.', '- list item B');   // identical blocks must not share ink; a block equal to a line of an earlier list is still a first
-  const text = blocks.join('\n\n');
+  let text, metaSections;
   // Obsidian's section list for the note (metadataCache), one entry per block.
-  const metaSections = []; { let line = 0; for (const blk of blocks) { const n = blk.split('\n').length; metaSections.push({ type: 'paragraph', position: { start: { line }, end: { line: line + n - 1 } } }); line += n + 1; } }
-  const lines = text.split('\n');
+  function index() {
+    text = blocks.join('\n\n');
+    metaSections = []; let line = 0;
+    for (const blk of blocks) { const n = blk.split('\n').length; metaSections.push({ type: 'paragraph', position: { start: { line }, end: { line: line + n - 1 } } }); line += n + 1; }
+  }
+  index();
 
   // --- In-memory vault adapter ---
   const files = new Map(), folders = new Set();
-  const vaultHandlers = {};
+  const vaultHandlers = {}, metaHandlers = {};
   // Just enough of the Vault API, backed by the in-memory `files` map.
   const vaultApi = {
     getAbstractFileByPath: (p) => files.has(p) ? new O.TFile(p) : folders.has(p) ? new O.TFolder(p) : null,
@@ -109,6 +113,7 @@
     modify: async (f, d) => { files.set(f.path, d); },
     create: async (p, d) => { if (files.has(p)) throw new Error('exists ' + p); files.set(p, d); return new O.TFile(p); },
     createFolder: async (p) => { folders.add(p); },
+    cachedRead: async (f) => { if (!files.has(f.path)) throw new Error('ENOENT ' + f.path); return files.get(f.path); },
     rename: async (f, to) => { files.set(to, files.get(f.path)); files.delete(f.path); },
   };
 
@@ -141,7 +146,10 @@
       onLayoutReady: (fn) => setTimeout(fn, 0),
       on: () => ({ off() {} }),
     },
-    metadataCache: { getCache: (p) => (p === NOTE ? { sections: metaSections } : null) },
+    metadataCache: {
+      getCache: (p) => (p === NOTE ? { sections: metaSections } : null),
+      on: (name, fn) => { (metaHandlers[name] = metaHandlers[name] || []).push(fn); return { off() {} }; },
+    },
     fileManager: { trashFile: async (f) => { files.delete(f.path); } },
     vault: {
       ...vaultApi,
@@ -182,7 +190,24 @@
       sectionHost.appendChild(el);
     }
   }
+  files.set(NOTE, text);
   render();
+
+  // Edit the note like typing in the editor would: the file changes, Obsidian re-indexes it
+  // ('changed') and re-renders reading view (either order happens in Obsidian).
+  // `synced`: the change came from another device while the note isn't open here.
+  async function edit(newBlocks, renderFirst = false, synced = false) {
+    blocks.splice(0, blocks.length, ...newBlocks);
+    index();
+    files.set(NOTE, text);
+    if (renderFirst) render();
+    const file = view.file;
+    if (synced) view.file = { path: 'Some other note.md' };   // the note isn't open on this device
+    const runs = (metaHandlers.changed || []).map(fn => fn(new O.TFile(NOTE), text, { sections: metaSections }));
+    view.file = file;
+    await Promise.all(runs);
+    if (!renderFirst) render();
+  }
 
   document.getElementById('theme').onclick = () => {
     document.body.classList.toggle('theme-light');
@@ -190,7 +215,7 @@
   };
 
   // Hooks for scripted tests
-  window.__pi = { plugin, view, app, files, render, vaultHandlers, NOTE, O };
+  window.__pi = { plugin, view, app, files, render, vaultHandlers, NOTE, O, blocks, edit };
   window.__ready = true;
 })().catch((e) => { document.body.insertAdjacentHTML('afterbegin', '<pre style="color:red">' + e.stack + '</pre>'); window.__error = e; });
 </script>

@@ -15,7 +15,7 @@ and is saved in its own file, so the Markdown underneath stays exactly as you wr
 
 It's made for the iPad and Apple Pencil, and it works just as well with a mouse or another pen on desktop.
 
-**New in 1.14:** resize and rotate, copy and paste between notes, four new shapes, and safer syncing.
+**New in 1.15:** ink follows your edits, and ink from a rewritten paragraph can be brought back.
 [See what's new](https://github.com/zhuff99/pen-ink/blob/main/CHANGELOG.md)
 
 <p align="center">
@@ -66,7 +66,8 @@ vault, for example `Annotations/Biology/Photosynthesis.json` for `Biology/Photos
 
 - Rename or move a note and its ink moves with it.
 - Ink is pinned to the paragraph you drew on, so it stays put when you scroll or when other parts of the note change.
-- If you rewrite a paragraph, its ink is hidden (never deleted), since it may no longer line up.
+- Edit a paragraph (fix a typo, add a sentence) and its ink stays with it. Rewrite it completely and the ink is
+  hidden, never deleted: tap **Bring it back** on the notice, or run **Pen Ink: Bring back hidden ink**.
 - No network requests, no telemetry, no dependencies. It's one plain JavaScript file you can read end to end.
 
 ## Getting started

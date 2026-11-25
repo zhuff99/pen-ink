@@ -45,7 +45,13 @@
   }
 
   class MarkdownView {}
-  class Notice { constructor(msg) { (root.__notices = root.__notices || []).push(String(msg)); } }
+  class Notice {
+    constructor(msg) {
+      (root.__notices = root.__notices || []).push(msg && msg.textContent != null ? msg.textContent : String(msg));
+      (root.__noticeEls = root.__noticeEls || []).push(msg);
+    }
+    hide() { this.hidden = true; }
+  }
   const normalizePath = (p) => p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
   const Platform = { isMobile: false };
   class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = { empty() {}, children: [] }; } }
