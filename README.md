@@ -15,7 +15,8 @@ and is saved in its own file, so the Markdown underneath stays exactly as you wr
 
 It's made for the iPad and Apple Pencil, and it works just as well with a mouse or another pen on desktop.
 
-**New in 1.15:** ink follows your edits, and ink from a rewritten paragraph can be brought back.
+**New in 1.16:** draw with a finger on your phone. **1.15:** ink follows your edits, and ink from a rewritten
+paragraph can be brought back.
 [See what's new](https://github.com/zhuff99/pen-ink/blob/main/CHANGELOG.md)
 
 <p align="center">
@@ -50,6 +51,8 @@ its color, restyle its width, line, fill or edges, duplicate it, bring it to the
 ## At home on the iPad
 
 - **Pencil draws, fingers scroll.** Rest your palm and swipe with a finger. Only the Pencil leaves ink.
+- **No stylus? Draw with a finger.** On phones one finger draws and two fingers scroll and zoom. Tap the hand to
+  scroll with one finger, and a tool to draw again (turn finger drawing on for tablets in settings).
 - **Pinch to zoom** up to 4× for small, neat details. Ink is always saved at its real size. Tap the zoom badge to jump back to 100%.
 - **Two-finger tap to undo**, plus undo and redo buttons.
 - **Favorites.** Save up to six pen and highlighter setups and switch with one tap.
@@ -82,6 +85,7 @@ vault, for example `Annotations/Biology/Photosynthesis.json` for `Biology/Photos
 | Setting | What it does |
 | --- | --- |
 | Ink folder | Where drawings are saved. `Annotations` by default. |
+| Draw with finger | One finger draws, two scroll and zoom. On by default on phones; once you use a pen, fingers scroll again until Done. |
 | Hold to straighten | Pause at the end of a stroke to snap it straight. |
 | Straight highlighter | Every highlight is drawn as a straight line. |
 | Smoothing | From 0 (exactly what you draw) to 80 (very smooth). |
@@ -95,7 +99,7 @@ vault, for example `Annotations/Biology/Photosynthesis.json` for `Biology/Photos
 | Mac with mouse or trackpad | Tested |
 | Android tablets with a stylus | Should work, not yet confirmed |
 | Windows pen devices | Should work, not yet confirmed |
-| iPhone | Should work, not yet confirmed |
+| iPhone (draw with a finger) | Should work, not yet confirmed |
 | Linux | Should work, not yet confirmed |
 
 If you try one of the unconfirmed setups, an [issue](https://github.com/zhuff99/pen-ink/issues) saying whether it

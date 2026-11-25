@@ -1371,6 +1371,93 @@
       await sleep(700);
     }
 
+    // ===== Draw with finger (phones): one finger draws, two scroll and zoom =====
+    {
+      const O = window.__pi.O, sc = view.contentEl.querySelector('.markdown-preview-view');
+      await plugin.toggle(view); await plugin.toggle(view);   // a fresh session: no pen used yet
+      const st = plugin.sessions.get(view);
+      plugin.prefs.tool = 'pen'; plugin.prefs.smoothing = 0; plugin.prefs.holdToStraighten = false;
+      const fp = (type, x, y, id, primary = true) => {
+        const el = document.elementFromPoint(x, y) || document.body;
+        el.dispatchEvent(new PointerEvent(type, { pointerType: 'touch', pointerId: id, isPrimary: primary, clientX: x, clientY: y, bubbles: true, cancelable: true, button: 0, buttons: type === 'pointerup' ? 0 : 1 }));
+        return el;
+      };
+      const f = (id, x, y) => ({ identifier: id, clientX: x, clientY: y });
+      const { r } = await at(24);
+      const x0 = r.left + 60, y0 = r.top + 20;
+      const fingerStroke = (dx = 15, dy = 0) => {
+        const tg = fp('pointerdown', x0, y0, 31); touch('touchstart', tg, [f(31, x0, y0)]);
+        for (let i = 1; i <= 10; i++) { fp('pointermove', x0 + i * dx, y0 + i * dy, 31); touch('touchmove', tg, [f(31, x0 + i * dx, y0 + i * dy)]); }
+        fp('pointerup', x0 + 10 * dx, y0 + 10 * dy, 31); touch('touchend', tg, [], [f(31, x0 + 10 * dx, y0 + 10 * dy)]);
+      };
+      const last = () => plugin.undoStack[plugin.undoStack.length - 1];
+      plugin.prefs.fingerDraws = null;
+      let n = plugin.undoStack.length;
+      fingerStroke();
+      check('finger: doesn\'t draw by default on tablets and computers', plugin.undoStack.length === n);
+      check('hand: no hand button on tablets and computers', !vis(bar().querySelector('[aria-label="Scroll"]')));
+      O.Platform.isPhone = true;
+      fingerStroke();
+      check('finger: draws by default on phones', plugin.undoStack.length === n + 1 && last().type === 'add', plugin.undoStack.length - n);
+      O.Platform.isPhone = false;
+      plugin.prefs.fingerDraws = true;
+      n = plugin.undoStack.length;
+      const top0 = sc.scrollTop;
+      fingerStroke(0, 8);   // straight down: must draw, not scroll
+      const a = last(), el = [...document.querySelectorAll('[data-pa-key]')].find(e => e.dataset.paKey === a.key);
+      const pr = el && [...el.querySelectorAll('.pa-layer-ink path')].pop(), rb = pr && pr.getBoundingClientRect();
+      check('finger: turned on, one finger draws (even straight down)', plugin.undoStack.length === n + 1 && sc.scrollTop === top0, [plugin.undoStack.length - n, sc.scrollTop - top0]);
+      check('…right under the finger', rb && Math.abs(rb.top - y0) < 2 && Math.abs(rb.bottom - (y0 + 80)) < 2, rb && [rb.top, rb.bottom, y0]);
+      // Two fingers: no ink, the page scrolls with them and spreading zooms.
+      n = plugin.undoStack.length;
+      const tg = fp('pointerdown', x0, y0, 41); touch('touchstart', tg, [f(41, x0, y0)]);
+      fp('pointermove', x0 + 5, y0 + 5, 41); touch('touchmove', tg, [f(41, x0 + 5, y0 + 5)]);
+      fp('pointerdown', x0 + 80, y0, 42, false); touch('touchstart', tg, [f(41, x0 + 5, y0 + 5), f(42, x0 + 80, y0)]);
+      check('finger: a second finger drops the stroke', !st.stroke);
+      const t1 = sc.scrollTop;
+      touch('touchmove', tg, [f(41, x0 + 5, y0 - 55), f(42, x0 + 80, y0 - 60)]);
+      check('…two fingers scroll the note', Math.abs(sc.scrollTop - t1 - 60) < 2, sc.scrollTop - t1);
+      touch('touchmove', tg, [f(41, x0 - 60, y0 - 55), f(42, x0 + 145, y0 - 60)]);
+      check('…and spreading them zooms', st.zoom.s > 1.5, st.zoom.s);
+      fp('pointerup', x0, y0, 41); fp('pointerup', x0, y0, 42);
+      touch('touchend', tg, [], [f(41, x0, y0), f(42, x0, y0)]);
+      check('…without leaving any ink', plugin.undoStack.length === n && !st.stroke, plugin.undoStack.length - n);
+      plugin.resetZoom(st); sc.scrollTop = top0; await sleep(60);
+      // Two-finger tap still undoes.
+      fingerStroke();
+      n = plugin.undoStack.length;
+      const tg2 = fp('pointerdown', x0, y0, 51); touch('touchstart', tg2, [f(51, x0, y0)]);
+      fp('pointerdown', x0 + 60, y0, 52, false); touch('touchstart', tg2, [f(51, x0, y0), f(52, x0 + 60, y0)]);
+      fp('pointerup', x0, y0, 51); fp('pointerup', x0 + 60, y0, 52);
+      touch('touchend', tg2, [], [f(51, x0, y0), f(52, x0 + 60, y0)]);
+      check('finger: a two-finger tap still undoes', plugin.undoStack.length === n - 1, plugin.undoStack.length - n);
+      // The hand: one finger scrolls instead of drawing; tapping a tool draws again.
+      const hand = bar().querySelector('[aria-label="Scroll"]'), penB = bar().querySelector('[aria-label="Pen"]');
+      const tap = (b) => { b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 61, pointerType: 'touch', isPrimary: true })); b.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 61, pointerType: 'touch', isPrimary: true })); };
+      check('hand: shown while drawing with a finger', hand && vis(hand) && !hand.classList.contains('is-active'));
+      tap(hand);
+      check('hand: tapping it makes it the active button (and the pen not)', hand.classList.contains('is-active') && !penB.classList.contains('is-active'));
+      n = plugin.undoStack.length;
+      const t2 = sc.scrollTop;
+      fingerStroke(0, -6);   // one finger moving up: scrolls down the note
+      check('hand: one finger scrolls, no ink', plugin.undoStack.length === n && sc.scrollTop - t2 > 40, [plugin.undoStack.length - n, sc.scrollTop - t2]);
+      plugin.stopGlide(st); sc.scrollTop = top0; await sleep(60);
+      tap(penB);
+      check('hand: tapping the pen draws again (without opening its card)', !hand.classList.contains('is-active') && penB.classList.contains('is-active') && !vis(document.querySelector('.pa-panel')));
+      fingerStroke();
+      check('…and one finger draws', plugin.undoStack.length === n + 1);
+      tap(hand); tap(hand);
+      check('hand: tapping it again goes back to drawing', !hand.classList.contains('is-active') && penB.classList.contains('is-active'));
+      // Once a pen is used, fingers are palms again (scrolling) until Done.
+      await stroke(24);
+      n = plugin.undoStack.length;
+      fingerStroke();
+      check('finger: after using a pen, fingers stop drawing', plugin.undoStack.length === n);
+      check('hand: hidden once a pen is used (fingers scroll anyway)', !vis(bar().querySelector('[aria-label="Scroll"]')));
+      plugin.prefs.fingerDraws = null;
+      sc.scrollTop = top0;
+    }
+
     // 11. Done removes the toolbar.
     bar().querySelector('[aria-label="Done"]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
     check('done closes annotation mode', !bar() && !plugin.sessions.has(view));

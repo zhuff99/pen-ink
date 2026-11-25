@@ -2,6 +2,12 @@
 
 Newest first. Updates arrive through **Settings → Community plugins → Check for updates**.
 
+## 1.16.0
+
+- **Draw with a finger.** No stylus needed: on phones one finger draws, and two fingers scroll and pinch to zoom. A
+  two-finger tap still undoes. Tap the **hand** in the toolbar to scroll with one finger; tap a tool to draw again. Turn it on for tablets in **Settings → Pen Ink → Draw with finger**. A pen always
+  draws, and once you use one, fingers go back to scrolling (so your palm can rest) until you tap Done.
+
 ## 1.15.0
 
 - **Ink follows your edits.** Fix a typo or add a sentence to a paragraph and its ink stays on it. Before, any change

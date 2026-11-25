@@ -44,6 +44,7 @@ const DEFAULT_PREFS = {
   recent: [],
   barPos: null,                          // toolbar position as {x, y} fractions of the note area; null = top-right
   barVertical: true,                     // toolbar as a column along the left side (or a row at the top)
+  fingerDraws: null,                     // one finger draws, two scroll; null = on for phones only
   holdToStraighten: true,
   smoothing: 30,                         // 0 (raw) .. 80 (very smooth)
   syncTipShown: false,                   // one-time note about Obsidian Sync and .json files
@@ -218,6 +219,7 @@ function mergePrefs(saved) {
   const b = saved.barPos, frac = (v) => typeof v === 'number' && v >= 0 && v <= 1;
   if (b && frac(b.x) && frac(b.y)) p.barPos = { x: b.x, y: b.y };
   if (typeof saved.holdToStraighten === 'boolean') p.holdToStraighten = saved.holdToStraighten;
+  if (typeof saved.fingerDraws === 'boolean') p.fingerDraws = saved.fingerDraws;
   if (saved.syncTipShown === true) p.syncTipShown = true;
   if (typeof saved.folder === 'string' && cleanFolder(saved.folder)) p.folder = cleanFolder(saved.folder);
   if (typeof saved.smoothing === 'number' && saved.smoothing >= 0 && saved.smoothing <= 80) p.smoothing = saved.smoothing;
@@ -681,6 +683,8 @@ function inPolygon(x, y, poly) {
 // Icons drawn on a 24x24 grid (outline style, like Obsidian's own icons).
 // The highlighter and sliders shapes follow Lucide's icons (ISC license).
 const ICONS = {
+  hand: ['M8 13V6a1.5 1.5 0 0 1 3 0v5', 'M11 11V4.5a1.5 1.5 0 0 1 3 0V11', 'M14 11V6a1.5 1.5 0 0 1 3 0v6',
+    'M17 11.5a1.5 1.5 0 0 1 3 0V15a7 7 0 0 1-7 7h-1.2a6 6 0 0 1-4.5-2L4.3 16.6a1.5 1.5 0 0 1 2.2-2L8 16V13'],
   pen: ['M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4z', 'M14.5 5.5l3 3'],
   highlighter: ['M9 11l-6 6v3h9l3-3', 'M21.5 12.5l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8l4.6-4.6'],
   eraser: ['M4.4 13.6l8.2-8.2a2 2 0 0 1 2.8 0l4.2 4.2a2 2 0 0 1 0 2.8L12 20H8l-3.6-3.6a2 2 0 0 1 0-2.8z', 'M8.5 9.5l6 6', 'M12 20h8'],
@@ -856,6 +860,9 @@ const PenInkSettings = PluginSettingTab && class extends PluginSettingTab {
           else t.setValue(this.plugin.inkFolder());
         });
       });
+    new Setting(el).setName('Draw with finger')
+      .setDesc('One finger draws; two fingers scroll and zoom. On by default on phones. A pen always draws, and once you use one, fingers go back to scrolling until you tap Done.')
+      .addToggle(t => t.setValue(this.plugin.fingerSetting()).onChange(v => { P.fingerDraws = v; changed(); }));
     new Setting(el).setName('Hold to straighten')
       .setDesc('Pause at the end of a pen or highlighter line and it snaps into a straight line.')
       .addToggle(t => t.setValue(P.holdToStraighten).onChange(v => { P.holdToStraighten = v; changed(); }));
@@ -1061,6 +1068,7 @@ class PenInk extends Plugin {
   // ----- ink storage -------------------------------------------------------
 
   inkFolder() { return cleanFolder(this.prefs.folder) || FOLDER; }
+  fingerSetting() { const f = this.prefs.fingerDraws; return typeof f === 'boolean' ? f : !!Platform.isPhone; }
   dataPath(notePath) { return normalizePath(`${this.inkFolder()}/${notePath.replace(/\.md$/, '')}.json`); }
   inkFile(path) { const f = this.app.vault.getAbstractFileByPath(path); return f instanceof TFile ? f : null; }
 
@@ -1483,7 +1491,11 @@ class PenInk extends Plugin {
     st.laserBox.appendChild(st.laserSvg);
     root.appendChild(st.laserBox);
 
-    const canDraw = (e) => e.pointerType === 'pen' || (e.pointerType === 'mouse' && !Platform.isMobile);
+    // Draw with finger: one finger draws, unless a pen has been used this session (then fingers are
+    // palms and scrolling again). Only the first finger down draws; a second one turns it into scrolling.
+    const fingerOn = () => this.fingerSetting() && !st.penSeen && !st.hand;
+    const canDraw = (e) => e.pointerType === 'pen' || (e.pointerType === 'mouse' && !Platform.isMobile) ||
+      (e.pointerType === 'touch' && e.isPrimary && fingerOn());
     const inToolbar = (e) => !!(e.target && e.target.closest && e.target.closest('.pa-toolbar, .pa-ui'));
     const reading = () => view.getMode() === 'preview';
 
@@ -1496,6 +1508,20 @@ class PenInk extends Plugin {
       const pen = [...e.touches].some(t => t.touchType === 'stylus') || (e.touches.length === 1 && Date.now() - st.penDownAt < 100);
       // While you're drawing, a palm or finger resting on the screen must not scroll or zoom.
       const busy = st.stroke || st.eraserId != null || st.lasso || st.moving || st.shape || st.laserId != null;
+      if (fingerOn() && !pen) {
+        // Drawing with a finger: one finger is a pen (its pointer events draw). A second finger
+        // drops what the first one started and the two scroll and zoom together.
+        e.preventDefault();
+        this.stopGlide(st);
+        this.trackTwoFingerTap(st, e);
+        st.pan = null;
+        if (e.touches.length === 2 && st.zoomEl) {
+          this.dropFingerAction(st);
+          const [a, b] = e.touches, m = [(a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2];
+          st.pinch = { d0: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1, s0: st.zoom.s, last: m, both: true };
+        } else { if (e.touches.length > 2) this.dropFingerAction(st); st.pinch = null; }
+        return;
+      }
       if (pen || busy) { st.tap = null; st.pinch = null; st.pan = null; e.preventDefault(); return; }
       // Fingers: we scroll, pan and zoom ourselves while annotating. Once iOS's own scrolling
       // takes over a gesture it stops sending us touch moves, which made pinches right after a
@@ -1513,7 +1539,14 @@ class PenInk extends Plugin {
       this.trackTwoFingerTap(st, e);
     };
     st.onTouchMove = (e) => {
-      if (st.pinch && e.touches.length === 2) {
+      if (st.pinch && st.pinch.both && e.touches.length === 2) {
+        // Two fingers while drawing with a finger: spread to zoom, move together to scroll.
+        e.preventDefault();
+        const [a, b] = e.touches, P0 = st.pinch, m = [(a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2];
+        this.zoomAround(st, P0.s0 * Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / P0.d0, m[0], m[1]);
+        this.panBy(st, m[0] - P0.last[0], m[1] - P0.last[1]);
+        P0.last = m;
+      } else if (st.pinch && e.touches.length === 2) {
         e.preventDefault();
         const [a, b] = e.touches, P0 = st.pinch;
         const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -1527,7 +1560,7 @@ class PenInk extends Plugin {
         P.x = t.clientX; P.y = t.clientY; P.t = now;
         P.moved = Math.max(P.moved, Math.hypot(t.clientX - P.x0, t.clientY - P.y0));
         this.panBy(st, dx, dy);
-      }
+      } else if (fingerOn() && !inToolbar(e) && reading()) e.preventDefault();   // the drawing finger mustn't scroll
       if (!st.tap) return;
       for (const t of e.changedTouches) {
         const s = st.tap.start[t.identifier];
@@ -1572,13 +1605,17 @@ class PenInk extends Plugin {
     const disarmHold = () => { if (st.hold) window.clearTimeout(st.hold.timer); st.hold = null; };
 
     st.onDown = (e) => {
-      if (e.pointerType === 'pen' && !inToolbar(e)) st.penDownAt = Date.now();
+      if (e.pointerType === 'pen' && !inToolbar(e)) {
+        st.penDownAt = Date.now();
+        if (!st.penSeen) { st.penSeen = true; st.hand = false; if (st.toolbar) st.toolbar.paint(); }   // fingers scroll now anyway: no hand needed
+      }
       // A pen's eraser end (button 5) or held side button (button 2) erases for that one stroke,
       // whatever tool is picked (S Pen, Surface and Wacom pens; the Apple Pencil has neither).
       const penErase = e.pointerType === 'pen' && P.penButtonErases !== false && (e.button === 5 || e.button === 2 || (e.buttons & 34) > 0);
       if (!canDraw(e) || (e.button > 0 && !penErase) || inToolbar(e) || !reading()) return;
       if (st.stroke || st.eraserId != null || st.lasso || st.moving || st.shape || st.laserId != null) return;   // already busy with another pointer
       const tool = penErase ? 'eraser' : P.tool;
+      st.fingerId = e.pointerType === 'touch' ? e.pointerId : null;
       st.tempErase = penErase && P.tool !== 'eraser';
       if (penErase) st.penEraseAt = Date.now();
       st.penErasing = penErase;
@@ -1782,6 +1819,23 @@ class PenInk extends Plugin {
   }
 
   // Two fingers down and up quickly without moving = undo.
+  // A second finger landed while the first was drawing: that was the start of a scroll or pinch,
+  // not ink. Throw away a stroke or shape in progress; end anything else (lasso, eraser) as is.
+  dropFingerAction(st) {
+    const id = st.fingerId;
+    st.fingerId = null;
+    if (id == null) return;
+    if (st.stroke && st.stroke.pointerId === id) {
+      const S = st.stroke; st.stroke = null;
+      if (S.raf) window.cancelAnimationFrame(S.raf);
+      if (st.hold) { window.clearTimeout(st.hold.timer); st.hold = null; }
+      if (S.el.paChild) { S.el.paChild.setLive(null); S.el.paChild.draw(); }
+    } else if (st.shape && st.shape.id === id) {
+      const el = st.shape.el; st.shape = null;
+      if (el.paChild) { el.paChild.setLive(null); el.paChild.draw(); }
+    } else if (st.onUp) st.onUp({ pointerId: id, pointerType: 'touch' });
+  }
+
   trackTwoFingerTap(st, e) {
     const now = Date.now();
     if (e.touches.length === 1) st.tap = { t0: now, max: 1, cancelled: false, start: {} };
@@ -2621,6 +2675,10 @@ class PenInk extends Plugin {
     const penBar = colorBar(), hlBar = colorBar('is-hl'), shapeBar = colorBar();
     const shapeIcon = h('span', 'pa-shape-icon');
     const raised = (svg) => { svg.classList.add('pa-raised'); return svg; };
+    // Hand: only while drawing with a finger. Tap it to scroll with one finger; tap a tool to draw again.
+    // Not saved, so marking up always starts out drawing.
+    const fingerMode = () => this.fingerSetting() && !st.penSeen;
+    const handBtn = button('Scroll', svgIcon(ICONS.hand), () => { st.hand = !st.hand; if (st.hand) closePanel(); paint(); });
     const tools = {
       pen: button('Pen', [raised(svgIcon(ICONS.pen)), penBar], () => pickTool('pen')),
       hl: button('Highlighter', [raised(svgIcon(ICONS.highlighter)), hlBar], () => pickTool('hl')),
@@ -2654,6 +2712,7 @@ class PenInk extends Plugin {
       return [icon, line, star];
     };
     const applyFavorite = (f) => {
+      st.hand = false;
       P.tool = f.tool; P.lastDrawTool = f.tool;
       P[f.tool].color = f.color; P[f.tool].size = f.size;
       if (f.tool === 'pen') { P.pen.type = f.type; P.pen.dash = f.dash || 'solid'; }
@@ -2696,7 +2755,7 @@ class PenInk extends Plugin {
     grip.setAttribute('aria-label', 'Move toolbar (double-tap to reset)');
     grip.setAttribute('title', 'Drag to move. Double-tap to put it back.');
 
-    row.append(grip, orientBtn, tools.pen, tools.hl, tools.shape, tools.eraser, tools.lasso, pasteBtn, tools.laser, zoomBtn, favSep, favRow, sep(), styleBtn, sep(), undoBtn, redoBtn, doneBtn);
+    row.append(grip, orientBtn, handBtn, tools.pen, tools.hl, tools.shape, tools.eraser, tools.lasso, pasteBtn, tools.laser, zoomBtn, favSep, favRow, sep(), styleBtn, sep(), undoBtn, redoBtn, doneBtn);
 
     // Vertical column along the side of the page (default), or a horizontal row.
     const applyOrientation = () => {
@@ -2874,7 +2933,10 @@ class PenInk extends Plugin {
 
     const paint = () => {
       buildFavorites();
-      for (const k in tools) active(tools[k], k === P.tool);
+      const hand = fingerMode() && st.hand;
+      show(handBtn, fingerMode());
+      active(handBtn, hand);
+      for (const k in tools) active(tools[k], k === P.tool && !hand);
       for (const b of favBtns) active(b, favMatches(b.paFav));
       cssVars(penBar, { '--pa-c': P.pen.color });
       cssVars(hlBar, { '--pa-c': P.hl.color });
@@ -3064,6 +3126,7 @@ class PenInk extends Plugin {
     };
 
     const pickTool = (tool) => {
+      if (st.hand) { st.hand = false; if (P.tool === tool) { paint(); return; } }   // back to drawing
       if (P.tool === tool) { togglePanel(); return; }   // tap the active tool again = its options
       P.tool = tool;
       if (tool === 'pen' || tool === 'hl' || tool === 'shape') P.lastDrawTool = tool;

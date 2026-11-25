@@ -54,7 +54,7 @@ globalThis.window = globalThis;
   assert.ok(handlers.rename && handlers.modify, 'rename + modify handlers registered');
   assert.strictEqual((plugin.settingTabs || []).length, 1, 'settings tab registered');
   plugin.settingTabs[0].display();
-  assert.deepStrictEqual(plugin.settingTabs[0].containerEl.children.map(x => x.name), ['Ink folder', 'Hold to straighten', 'Straight highlighter', 'Smoothing', 'Eraser switches back']);
+  assert.deepStrictEqual(plugin.settingTabs[0].containerEl.children.map(x => x.name), ['Ink folder', 'Draw with finger', 'Hold to straighten', 'Straight highlighter', 'Smoothing', 'Eraser switches back']);
   assert.strictEqual(plugin.inkFolder(), 'Annotations');
   assert.strictEqual(plugin.dataPath('A/B.md'), 'Annotations/A/B.json');
   const folderCtl = plugin.settingTabs[0].containerEl.children[0].control;
