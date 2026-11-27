@@ -14,6 +14,9 @@
 /* ----- ink on the page ----- */
 
 .pa-section { position: relative; }
+/* "Hide or show ink": every drawing hidden at once, nothing deleted. */
+.pa-ink-hidden .pa-layer-ink:not(#pa-x):not(#pa-y),
+.pa-ink-hidden .pa-layer-hl:not(#pa-x):not(#pa-y) { display: none; }
 .pa-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 
 /* Highlighter layer: blended so the text stays crisp, as if the ink sat behind it. */
@@ -40,7 +43,17 @@
   cursor: crosshair;
 }
 /* Eraser and laser: their ring / red dot is the pointer, so hide the crosshair. */
+/* Each pointer is set on the note area itself too: while you press, the pointer is captured there, and
+   the browser shows that element's pointer. The toolbar and cards keep their own. */
+.pa-annotating { cursor: crosshair; }
+.pa-annotating .pa-ui { cursor: default; }
+.pa-annotating.pa-no-cursor,
 .pa-annotating.pa-no-cursor .markdown-preview-view { cursor: none; }
+/* Pen and highlighter: the tool itself in its color (set by code, see cursorFor). Select: an arrow. */
+.pa-annotating.pa-cur-tool,
+.pa-annotating.pa-cur-tool .markdown-preview-view { cursor: var(--pa-cursor, crosshair); }
+.pa-annotating.pa-cur-select,
+.pa-annotating.pa-cur-select .markdown-preview-view { cursor: default; }
 
 /* ----- things that follow the pointer ----- */
 
@@ -80,10 +93,10 @@
   left: calc(50% - 11px); top: calc(100% + 20.5px); width: 22px; height: 22px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center; color: var(--interactive-accent);
 }
-.pa-annotating.pa-cur-move .markdown-preview-view { cursor: move; }
-.pa-annotating.pa-cur-nwse .markdown-preview-view { cursor: nwse-resize; }
-.pa-annotating.pa-cur-nesw .markdown-preview-view { cursor: nesw-resize; }
-.pa-annotating.pa-cur-rotate .markdown-preview-view { cursor: grab; }
+.pa-annotating.pa-cur-move, .pa-annotating.pa-cur-move .markdown-preview-view { cursor: move; }
+.pa-annotating.pa-cur-nwse, .pa-annotating.pa-cur-nwse .markdown-preview-view { cursor: nwse-resize; }
+.pa-annotating.pa-cur-nesw, .pa-annotating.pa-cur-nesw .markdown-preview-view { cursor: nesw-resize; }
+.pa-annotating.pa-cur-rotate, .pa-annotating.pa-cur-rotate .markdown-preview-view { cursor: grab; }
 
 /* ----- toolbar, cards and the selection menu ----- */
 
@@ -107,6 +120,7 @@
   padding: 4px; border-radius: 16px; box-sizing: border-box;
 }
 .pa-favs { display: flex; align-items: center; gap: 2px; }
+.pa-row.pa-measuring { flex-wrap: nowrap; }   /* briefly, while the toolbar measures how long it is */
 .pa-toolbar.is-vertical .pa-row,
 .pa-toolbar.is-vertical .pa-favs { flex-direction: column; }
 
@@ -171,11 +185,13 @@
 .pa-toolbar.is-vertical .pa-favpop.is-up { top: auto; bottom: 0; }
 .pa-toolbar.is-vertical .pa-favpop.is-left { left: auto; right: calc(100% + 8px); }
 /* ...and if that's still too long, the buttons get a little smaller. */
-.pa-toolbar.is-compact > .pa-row > .pa-btn:not(.pa-btn-done):not(#pa-x),
+.pa-toolbar.is-compact > .pa-row > .pa-btn:not(.pa-btn-done):not(.pa-btn-orient):not(#pa-x),
 .pa-toolbar.is-compact .pa-favbox > .pa-btn:not(#pa-x),
 .pa-toolbar.is-compact .pa-favs > .pa-btn:not(#pa-x) { width: 38px; height: 38px; }
 .pa-toolbar.is-compact.is-vertical .pa-btn-orient:not(.pa-btn-done):not(#pa-x) { width: 38px; height: 26px; }
 .pa-toolbar.is-compact.is-vertical .pa-grip { width: 38px; height: 20px; }
+.pa-toolbar.is-compact:not(.is-vertical) .pa-btn-orient:not(#pa-x) { height: 38px; }
+.pa-toolbar.is-compact:not(.is-vertical) .pa-grip { height: 38px; }
 .pa-toolbar.is-compact.is-vertical .pa-btn-done:not(#pa-x) { width: 36px; height: 36px; }
 
 .pa-ui .pa-btn-text:not(#pa-x) {

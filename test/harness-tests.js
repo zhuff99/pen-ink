@@ -1455,6 +1455,63 @@
       check('…and one finger draws', plugin.undoStack.length === n + 1);
       tap(hand); tap(hand);
       check('hand: tapping it again goes back to drawing', !hand.classList.contains('is-active') && penB.classList.contains('is-active'));
+      // ----- bug sweep before 1.17.0 -----
+      const keyAt = (x, y) => { const el = plugin.sectionAt(view.contentEl, x, y); return el && el.dataset.paKey; };
+      // A quick tap presses what's under it (a link) instead of drawing a dot.
+      await sleep(450);
+      { const a = sections()[24].querySelector('a'); const ar = a.getBoundingClientRect(), lx = ar.left + 4, ly = ar.top + ar.height / 2;
+        window.__linkClicks = 0; n = plugin.undoStack.length;
+        const tg = fp('pointerdown', lx, ly, 70); touch('touchstart', tg, [f(70, lx, ly)]); fp('pointerup', lx, ly, 70); touch('touchend', tg, [], [f(70, lx, ly)]);
+        check('sweep: a finger tap opens a link, no dot', window.__linkClicks === 1 && plugin.undoStack.length === n, [window.__linkClicks, plugin.undoStack.length - n]); }
+      // Eraser: the first finger of a pinch doesn't erase anything.
+      fingerStroke();
+      const k1 = keyAt(x0 + 60, y0), before1 = plugin.strokesFor(NOTE, k1).length;
+      plugin.prefs.tool = 'eraser'; plugin.refreshToolbars();
+      n = plugin.undoStack.length;
+      { const tg = fp('pointerdown', x0 + 40, y0, 71); touch('touchstart', tg, [f(71, x0 + 40, y0)]);
+        fp('pointermove', x0 + 52, y0, 71); touch('touchmove', tg, [f(71, x0 + 52, y0)]);   // moved: erasing started
+        check('sweep: (the eraser finger did start erasing)', plugin.strokesFor(NOTE, k1).length < before1);
+        fp('pointerdown', x0 + 160, y0, 72, false); touch('touchstart', tg, [f(71, x0 + 52, y0), f(72, x0 + 160, y0)], [f(72, x0 + 160, y0)]);   // only the new finger is "changed"
+        fp('pointerup', x0, y0, 71); fp('pointerup', x0, y0, 72); touch('touchend', tg, [], [f(71, x0, y0), f(72, x0, y0)]); }
+      check('sweep: …a second finger puts back what it erased, nothing to undo, still the eraser',
+        plugin.strokesFor(NOTE, k1).length === before1 && plugin.undoStack.length === n && plugin.prefs.tool === 'eraser' && !vis(document.querySelector('.pa-ring')),
+        [plugin.strokesFor(NOTE, k1).length, before1, plugin.undoStack.length - n, plugin.prefs.tool]);
+      plugin.prefs.tool = 'pen'; plugin.refreshToolbars();
+      // The system cancels a finger (back swipe): no stroke.
+      n = plugin.undoStack.length;
+      { const tg = fp('pointerdown', x0, y0, 73); touch('touchstart', tg, [f(73, x0, y0)]);
+        for (let i = 1; i <= 4; i++) { fp('pointermove', x0 + i * 10, y0, 73); touch('touchmove', tg, [f(73, x0 + i * 10, y0)]); }
+        fp('pointercancel', x0 + 40, y0, 73); touch('touchend', tg, [], [f(73, x0 + 40, y0)]); }
+      check('sweep: a cancelled finger leaves no stroke', plugin.undoStack.length === n && !st.stroke);
+      // A two-finger tap where both fingers land at the same moment still undoes.
+      await sleep(60); fingerStroke(); n = plugin.undoStack.length;
+      { const tg = fp('pointerdown', x0, y0, 81); fp('pointerdown', x0 + 60, y0, 82, false);
+        touch('touchstart', tg, [f(81, x0, y0), f(82, x0 + 60, y0)]);
+        fp('pointerup', x0, y0, 81); fp('pointerup', x0 + 60, y0, 82); touch('touchend', tg, [], [f(81, x0, y0), f(82, x0 + 60, y0)]); }
+      check('sweep: two fingers landing together still undo', plugin.undoStack.length === n - 1, plugin.undoStack.length - n);
+      // Select: a pinch doesn't clear the selection.
+      fingerStroke(); const picked = plugin.undoStack[plugin.undoStack.length - 1].s;
+      plugin.prefs.tool = 'lasso'; plugin.refreshToolbars();
+      plugin.clearSelection(); plugin.selected.add(picked); plugin.afterHistory();
+      { const y2 = y0 + 160, tg = fp('pointerdown', x0, y2, 91); touch('touchstart', tg, [f(91, x0, y2)]);
+        fp('pointermove', x0 + 12, y2, 91); touch('touchmove', tg, [f(91, x0 + 12, y2)]);
+        fp('pointerdown', x0 + 120, y2, 92, false); touch('touchstart', tg, [f(91, x0 + 12, y2), f(92, x0 + 120, y2)], [f(92, x0 + 120, y2)]);
+        fp('pointerup', x0, y2, 91); fp('pointerup', x0, y2, 92); touch('touchend', tg, [], [f(91, x0, y2), f(92, x0, y2)]); }
+      check('sweep: a pinch with Select keeps the selection', plugin.selected.size === 1 && plugin.selected.has(picked) && !st.lasso, plugin.selected.size);
+      plugin.clearSelection(); plugin.prefs.tool = 'pen'; plugin.refreshToolbars();
+      // Hidden ink comes back when you draw.
+      plugin.setInkHidden(true); fingerStroke();
+      check('sweep: drawing while ink is hidden shows it again', !document.body.classList.contains('pa-ink-hidden'));
+      // A palm down first, then the pen: the palm's mark goes, the pen draws.
+      n = plugin.undoStack.length;
+      { const tg = fp('pointerdown', x0, y0 + 40, 95); touch('touchstart', tg, [f(95, x0, y0 + 40)]);
+        for (let i = 1; i <= 3; i++) fp('pointermove', x0 + i * 10, y0 + 40, 95);
+        check('sweep: (the palm had started a stroke)', !!st.stroke);
+        drawPts([[x0, y0 + 80], [x0 + 60, y0 + 80], [x0 + 120, y0 + 80]]);
+        fp('pointerup', x0 + 30, y0 + 40, 95); touch('touchend', tg, [], [f(95, x0 + 30, y0 + 40)]); }
+      const Lp = last(), Wp = plugin.sections(view.contentEl)[0].getBoundingClientRect().width, xs = Lp && Lp.s.pts.map(p => p[0] * Wp);
+      const spanP = xs ? Math.max(...xs) - Math.min(...xs) : 0;   // the pen's line is 120px wide, the palm's 30px
+      check('sweep: a pen landing during a palm stroke drops the palm\'s and draws its own', plugin.undoStack.length === n + 1 && !st.stroke && spanP > 100, [plugin.undoStack.length - n, Math.round(spanP)]);
       // Once a pen is used, fingers are palms again (scrolling) until Done.
       await stroke(24);
       n = plugin.undoStack.length;
@@ -1531,9 +1588,94 @@
       plugin.prefs.barVertical = saved.v; bar().classList.toggle('is-vertical', !!saved.v); plugin.prefs.barPos = saved.pos; st.toolbar.place();
     }
 
+    // ===== Select all ink on screen, and Hide or show ink =====
+    {
+      const st = plugin.sessions.get(view), cmd = (id) => plugin.commands.find(c => c.id === id);
+      const rr0 = view.contentEl.getBoundingClientRect(), onScreen = (el) => { const r = el.getBoundingClientRect(); return r.bottom >= rr0.top && r.top <= rr0.bottom; };
+      const onPage = () => plugin.sections(view.contentEl).filter(el => el.dataset.paPath === NOTE && onScreen(el)).reduce((n, el) => n + plugin.strokesFor(NOTE, el.dataset.paKey).length, 0);
+      const offScreen = plugin.sections(view.contentEl).filter(el => !onScreen(el)).flatMap(el => plugin.strokesFor(NOTE, el.dataset.paKey));
+      plugin.clearSelection();
+      const total = onPage();
+      check('select all: offered while marking up', cmd('select-all-ink') && cmd('select-all-ink').checkCallback(true) === true);
+      cmd('select-all-ink').checkCallback(false);
+      check('select all: picks every drawing on the page', total > 5 && plugin.selected.size === total && plugin.prefs.tool === 'lasso', [plugin.selected.size, total]);
+      check('…and shows the selection box', vis(document.querySelector('.pa-selbox')));
+      check('select all: leaves ink scrolled out of view alone', offScreen.length > 0 && offScreen.every(s => !plugin.selected.has(s)), offScreen.length);
+      const mr = document.querySelector('.pa-selmenu').getBoundingClientRect();
+      check('…and its menu stays on screen', mr.top >= rr0.top && mr.bottom <= rr0.bottom, [mr.top, mr.bottom]);
+      plugin.clearSelection();
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }));
+      check('select all: Cmd/Ctrl + A does it too', plugin.selected.size === total, plugin.selected.size);
+      plugin.clearSelection();
+      const modal = document.createElement('div'); modal.className = 'modal-container'; document.body.appendChild(modal);
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', metaKey: true, bubbles: true, cancelable: true }));
+      check('select all: Cmd/Ctrl + A does nothing behind a dialog', plugin.selected.size === 0);
+      modal.remove();
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ф', code: 'KeyA', metaKey: true, bubbles: true, cancelable: true }));
+      check('select all: works with a non-Latin keyboard layout', plugin.selected.size === total, plugin.selected.size);
+      plugin.clearSelection();
+      // A note renamed while its ink is still loading keeps its ink under the new name.
+      files.set('Annotations/Loading A.json', JSON.stringify({ version: 1, sections: { k: [{ kind: 'pen', color: '#000000', width: 2, opacity: 1, pts: [[0.1, 1], [0.2, 2]] }] } }));
+      const pl = plugin.loadInk('Loading A.md');
+      plugin.cache.set('Loading B.md', plugin.cache.get('Loading A.md')); plugin.cache.delete('Loading A.md');   // what the rename does
+      await pl;
+      const dB = plugin.cache.get('Loading B.md');
+      check('sweep: ink renamed mid-load lands under the new name', dB && !(dB instanceof Promise) && dB.sections.k && !plugin.cache.has('Loading A.md') && plugin.lastWritten.has('Loading B.md'));
+      plugin.cache.delete('Loading B.md'); plugin.lastWritten.delete('Loading B.md'); files.delete('Annotations/Loading A.json');
+      const inp = document.createElement('input'); document.body.appendChild(inp); inp.focus();
+      inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }));
+      check('…but not while typing in a field', plugin.selected.size === 0);
+      inp.remove();
+      plugin.prefs.tool = 'pen'; plugin.refreshToolbars();
+      // Hide or show ink.
+      await sleep(700);   // let earlier saves land first
+      const saved = files.get('Annotations/Folder/Long test note.json');
+      const inked = plugin.sections(view.contentEl).find(el => plugin.strokesFor(NOTE, el.dataset.paKey).length);
+      const layerShown = () => getComputedStyle(inked.querySelector('.pa-layer-ink')).display !== 'none' || getComputedStyle(inked.querySelector('.pa-layer-hl')).display !== 'none';
+      check('hide ink: (ink showing to start with)', layerShown());
+      cmd('toggle-ink-visibility').callback();
+      check('hide ink: hides every drawing', document.body.classList.contains('pa-ink-hidden') && !layerShown());
+      await sleep(700);
+      check('…without changing the saved ink', files.get('Annotations/Folder/Long test note.json') === saved);
+      cmd('toggle-ink-visibility').callback();
+      check('hide ink: running it again shows them', !document.body.classList.contains('pa-ink-hidden') && layerShown());
+      cmd('toggle-ink-visibility').callback();
+      plugin.stop(view); await plugin.start(view);
+      check('hide ink: marking up shows the ink again', !document.body.classList.contains('pa-ink-hidden') && layerShown());
+      plugin.prefs.barVertical = false;
+    }
+
+    // ===== the mouse pointer matches the tool =====
+    {
+      const sc = view.contentEl.querySelector('.markdown-preview-view'), cur = () => getComputedStyle(sc).cursor;
+      const pick = (tool) => { plugin.prefs.tool = tool; plugin.refreshToolbars(); };
+      plugin.prefs.pen.color = '#e03131'; plugin.prefs.hl.color = '#ffd400';
+      pick('pen');
+      check('cursor: the pen is a pencil in its color, tip on the ink', /^url\(/.test(cur()) && cur().includes(encodeURIComponent('#e03131')) && /\b2 22\b/.test(cur()), cur().slice(-40));
+      plugin.prefs.pen.color = '#1c7ed6'; plugin.refreshToolbars();
+      check('…and follows a color change', cur().includes(encodeURIComponent('#1c7ed6')));
+      // While you press, the pointer is captured by the note area: it must show the pencil too.
+      const rootCur = getComputedStyle(view.contentEl).cursor;
+      check('cursor: the pencil stays while pressing (on the note area that captures the pointer)', rootCur === cur(), rootCur.slice(0, 30));
+      const tb = getComputedStyle(bar()).cursor;
+      check('…but not over the toolbar', !/^url\(/.test(tb), tb.slice(0, 30));
+      pick('hl');
+      check('cursor: the highlighter is a highlighter in its color', /^url\(/.test(cur()) && cur().includes(encodeURIComponent('#ffd400')) && /\b4 20\b/.test(cur()));
+      pick('shape');
+      check('cursor: shapes keep the crosshair', cur() === 'crosshair', cur());
+      pick('eraser');
+      check('cursor: the eraser is a pink eraser', /^url\(/.test(cur()) && cur().includes(encodeURIComponent('#f783ac')) && /\b5 19\b/.test(cur()), cur().slice(-40));
+      pick('laser');
+      check('cursor: the laser shows its red dot instead', cur() === 'none', cur());
+      pick('lasso');
+      check('cursor: Select is an arrow', cur() === 'default', cur());
+      pick('pen'); plugin.prefs.pen.color = '#e03131'; plugin.refreshToolbars();
+    }
+
     // 11. Done removes the toolbar.
     bar().querySelector('[aria-label="Done"]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
     check('done closes annotation mode', !bar() && !plugin.sessions.has(view));
+    check('done puts the normal pointer back', !view.contentEl.classList.contains('pa-cur-tool') && !view.contentEl.style.getPropertyValue('--pa-cursor'));
     await sleep(50);
     window.removeEventListener('error', onErr); window.removeEventListener('unhandledrejection', onErr);
     check('no uncaught errors during the whole run', uncaught.length === 0, uncaught.slice(0, 3));

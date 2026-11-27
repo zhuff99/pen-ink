@@ -2,6 +2,36 @@
 
 Newest first. Updates arrive through **Settings → Community plugins → Check for updates**.
 
+## 1.17.0
+
+- **Hide or show ink.** A command that hides every drawing so you can read the clean note, without deleting anything.
+  Run it again to bring the ink back (marking up or restarting Obsidian shows it too).
+- **Select all ink on screen.** A command (or Cmd/Ctrl + A while marking up) that selects every drawing on the page,
+  ready to move, restyle, copy or delete. In long notes, Obsidian only keeps the part near the screen loaded, so it
+  picks the ink there.
+- **Tool-shaped pointer** with a mouse or trackpad: the pen is a pencil and the highlighter a chunky highlighter,
+  each in its current color, with the tip right where the ink lands. The eraser is a pink eraser, still with its size
+  ring. Select shows a normal arrow.
+
+**Fixed**
+
+- Drawing with a finger: a quick tap now presses what's under it (a link, a checkbox) instead of leaving a dot, and
+  the first finger of a pinch or two-finger tap no longer draws, erases or clears your selection.
+- A two-finger tap undoes even when both fingers land at the same moment.
+- A system swipe (like Android's back gesture) no longer leaves half a stroke behind.
+- With finger drawing on a tablet, a palm that touches first no longer leaves a mark, and the pen's first stroke
+  isn't lost. An accidental second touch no longer throws away a long stroke.
+- The eraser ring no longer stays on screen after erasing with a finger.
+- The toolbar re-fits when the zoom or paste button appears, and opens its cards toward the open side after you
+  move it.
+- Cmd/Ctrl + C, X, V and A also work in popout windows, and no longer act behind a dialog or while another part of
+  Obsidian has focus.
+- Renaming a note right as its ink loads no longer leaves the ink invisible until a restart.
+- Edits are only followed in the note you're working in, so two devices with the same note open can't move the same
+  ink twice.
+- "Bring back hidden ink" is now called "Bring back ink from rewritten paragraphs", so it isn't mixed up with "Hide
+  or show ink".
+
 ## 1.16.1
 
 - On phones, the toolbar no longer hides under Obsidian's floating buttons (the sidebar button at the top and the

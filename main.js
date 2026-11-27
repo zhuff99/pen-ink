@@ -718,6 +718,36 @@ const ICONS = {
 };
 const SHAPE_NAMES = { rect: 'Rectangle', ellipse: 'Ellipse', triangle: 'Triangle', diamond: 'Diamond', pentagon: 'Pentagon', hexagon: 'Hexagon', star: 'Star', line: 'Line', arrow: 'Arrow' };
 
+// Mouse/trackpad pointers: the pen and highlighter look like the tool in its current color, the eraser
+// like a pink eraser. The tip (or the eraser's working edge) is the hotspot, right where ink goes or
+// goes away. A white halo keeps them visible on dark themes.
+// parts: [path, fill ('ink' = the tool's color), stroke]
+const CURSORS = {
+  pen: { tip: [2, 22], parts: [
+    ['M2 22l1.4-5.2L16.8 3.4a2.4 2.4 0 0 1 3.4 3.4L6.8 20.2z', 'ink', '#222'],
+    ['M14.6 5.6l3.4 3.4M3.4 16.8l3.4 3.4', 'none', '#222']] },
+  hl: { tip: [4, 20], parts: [   // a fat body with a chisel nib
+    ['M5.2 13.2L16.2 2.2a2.8 2.8 0 0 1 4 0l1.6 1.6a2.8 2.8 0 0 1 0 4L10.8 18.8z', 'ink', '#222'],
+    ['M5.2 13.2l5.6 5.6L5.5 21.5l-3-3z', 'ink', '#222'],
+    ['M6.4 12l5.6 5.6', 'none', '#222']] },
+  eraser: { tip: [5, 19], parts: [   // a pink block eraser, its working end at the bottom left
+    ['M2 16L15 3a2.1 2.1 0 0 1 3 0l3 3a2.1 2.1 0 0 1 0 3L8 22z', '#f783ac', '#222'],
+    ['M2 16l5.2-5.2 6 6L8 22z', '#fcc2d7', '#222']] },
+};
+const cursorCache = new Map();
+function cursorFor(tool, color) {
+  const id = tool + color;
+  if (!cursorCache.has(id)) {
+    const C = CURSORS[tool];
+    const halo = C.parts.map(p => p[0]).join(' ');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linejoin="round" stroke-linecap="round">` +
+      `<path d="${halo}" stroke="#fff" stroke-width="3.2"/>` +
+      C.parts.map(([d, fill, stroke]) => `<path d="${d}" fill="${fill === 'ink' ? color : fill}" stroke="${stroke}" stroke-width="1.2"/>`).join('') + '</svg>';
+    cursorCache.set(id, `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${C.tip[0]} ${C.tip[1]}, crosshair`);
+  }
+  return cursorCache.get(id);
+}
+
 function svgIcon(paths, size, strokeWidth, dash) {
   const svg = activeDocument.createElementNS(SVGNS, 'svg');
   const px = String(size || 24);
@@ -908,6 +938,7 @@ class PenInk extends Plugin {
     this.hiddenNotice = null;      // { notice, at } of the last "ink is hidden" notice
     this.lostKeys = new Map();     // notePath -> keys whose ink an edit hid (what the notice brings back)
     this.editQueue = new Map();    // notePath -> the edit being followed (one at a time, in order)
+    this.inkHidden = false;        // "Hide or show ink" (not saved)
     this.prefsTimer = null;
     this.prefs = mergePrefs(await this.loadData());
 
@@ -952,7 +983,13 @@ class PenInk extends Plugin {
       if (!checking) this.pasteInk(this.sessions.get(view));
       return true;
     }});
-    this.addCommand({ id: 'recover-hidden-ink', name: 'Bring back hidden ink', checkCallback: (checking) => {
+    // Peek at the clean note. Not saved: restarting Obsidian (or marking up) always shows the ink again.
+    this.addCommand({ id: 'toggle-ink-visibility', name: 'Hide or show ink', callback: () => {
+      this.setInkHidden(!this.inkHidden);
+      new Notice(this.inkHidden ? 'Pen Ink: ink hidden. Run "Hide or show ink" again to bring it back.' : 'Pen Ink: ink shown.');
+    }});
+    this.addCommand({ id: 'select-all-ink', name: 'Select all ink on screen', checkCallback: inSession((view) => this.selectAll(this.sessions.get(view))) });
+    this.addCommand({ id: 'recover-hidden-ink', name: 'Bring back ink from rewritten paragraphs', checkCallback: (checking) => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view || !view.file || !this.hiddenKeys(view.file.path).length) return false;
       if (!checking) { const j = this.justHidden(view.file.path); this.recoverHidden(view, j.length ? j : null); }
@@ -960,16 +997,29 @@ class PenInk extends Plugin {
     }});
     // Cmd/Ctrl + C, X, V while marking up. Only when there's ink to act on, and never while typing
     // in a field, so normal copy and paste keep working everywhere else.
-    this.registerDomEvent(activeDocument, 'keydown', (e) => {
+    // Also not behind a dialog, or while another part of Obsidian (a sidebar, the editor) has focus.
+    const onKey = (e) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
       const t = e.target;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       const view = this.app.workspace.getActiveViewOfType(MarkdownView), st = view && this.sessions.get(view);
       if (!st) return;
-      const k = e.key.toLowerCase();
-      if ((k === 'c' || k === 'x') && this.selected.size) { e.preventDefault(); this.copySelection(st, k === 'x'); }
+      const doc = st.root.ownerDocument || activeDocument, ae = doc.activeElement;
+      if (doc.querySelector('.modal-container') || (ae && ae !== doc.body && !st.root.contains(ae))) return;
+      // By key position too, so it works with any keyboard layout.
+      const k = e.code && /^Key[ACXV]$/.test(e.code) ? e.code.slice(3).toLowerCase() : (e.key || '').toLowerCase();
+      if (k === 'a') { if (this.selectAll(st)) e.preventDefault(); }
+      else if ((k === 'c' || k === 'x') && this.selected.size) { e.preventDefault(); this.copySelection(st, k === 'x'); }
       else if (k === 'v' && this.inkClip) { e.preventDefault(); this.pasteInk(st); }
-    });
+    };
+    this.registerDomEvent(activeDocument, 'keydown', onKey);
+    // Popout windows: the same keys, and "Hide or show ink" applies there too.
+    this.registerEvent(this.app.workspace.on('window-open', (w, win) => {
+      const doc = (w && w.doc) || (win && win.document);
+      if (!doc) return;
+      this.registerDomEvent(doc, 'keydown', onKey);
+      if (doc.body) doc.body.classList.toggle('pa-ink-hidden', this.inkHidden);
+    }));
 
     // Header button: our own marker icon, so it doesn't look like Obsidian's edit (pencil) toggle.
     let headerIcon = 'highlighter';
@@ -994,8 +1044,10 @@ class PenInk extends Plugin {
 
     this.registerEvent(this.app.vault.on('rename', async (file, oldPath) => {
       if (!(file instanceof TFile) || !oldPath.endsWith('.md')) return;
-      for (const m of [this.noteText, this.seenKeys, this.lostKeys]) if (m.has(oldPath)) { m.set(file.path, m.get(oldPath)); m.delete(oldPath); }
+      for (const m of [this.noteText, this.seenKeys, this.lostKeys, this.editQueue]) if (m.has(oldPath)) { m.set(file.path, m.get(oldPath)); m.delete(oldPath); }
       try {
+        const loading = this.cache.get(oldPath);
+        if (loading instanceof Promise) await loading;   // let it land first, then move it
         if (this.saveTimers.has(oldPath)) await this.writeInk(oldPath);   // save under the old name first
         const from = this.dataPath(oldPath), to = this.dataPath(file.path), src = this.inkFile(from), dest = this.inkFile(to);
         if (from !== to && src && !dest) {
@@ -1053,6 +1105,7 @@ class PenInk extends Plugin {
   }
 
   onunload() {
+    this.setInkHidden(false);
     for (const view of [...this.sessions.keys()]) this.stop(view);
     this.app.workspace.iterateAllLeaves(leaf => {
       const v = leaf.view;
@@ -1068,6 +1121,14 @@ class PenInk extends Plugin {
   // ----- ink storage -------------------------------------------------------
 
   inkFolder() { return cleanFolder(this.prefs.folder) || FOLDER; }
+
+  // Hide every drawing (a class on each window's page; styles.css does the hiding) or show them again.
+  setInkHidden(hidden) {
+    this.inkHidden = hidden;
+    const docs = new Set([activeDocument]);
+    this.app.workspace.iterateAllLeaves(leaf => { const d = leaf.view && leaf.view.containerEl && leaf.view.containerEl.ownerDocument; if (d) docs.add(d); });
+    for (const d of docs) if (d.body) d.body.classList.toggle('pa-ink-hidden', hidden);
+  }
   fingerSetting() { const f = this.prefs.fingerDraws; return typeof f === 'boolean' ? f : !!Platform.isPhone; }
   dataPath(notePath) { return normalizePath(`${this.inkFolder()}/${notePath.replace(/\.md$/, '')}.json`); }
   inkFile(path) { const f = this.app.vault.getAbstractFileByPath(path); return f instanceof TFile ? f : null; }
@@ -1083,22 +1144,27 @@ class PenInk extends Plugin {
   }
 
   async readInkFile(notePath) {
-    let data = { version: 1, sections: {} };
+    let data = { version: 1, sections: {} }, raw = null;
     try {
       const file = this.inkFile(this.dataPath(notePath));
       if (file) {
-        const raw = await this.app.vault.read(file);
+        raw = await this.app.vault.read(file);
         const parsed = JSON.parse(raw);
         if (parsed && parsed.sections && typeof parsed.sections === 'object') data = parsed;
-        this.lastWritten.set(notePath, raw);
       }
     } catch (e) { console.error('Pen Ink: could not read ink for', notePath, e); }
-    return data;
+    return { data, raw };
   }
 
   loadInk(notePath) {
     if (this.cache.has(notePath)) return Promise.resolve(this.cache.get(notePath));
-    const p = this.readInkFile(notePath).then(data => { this.cache.set(notePath, data); return data; });
+    // The note may be renamed while its ink loads: store it wherever this load is filed by then.
+    const p = this.readInkFile(notePath).then(({ data, raw }) => {
+      let at = this.cache.get(notePath) === p ? notePath : null;
+      if (!at) for (const [k, v] of this.cache) if (v === p) at = k;
+      if (at) { this.cache.set(at, data); if (raw != null) this.lastWritten.set(at, raw); }
+      return data;
+    });
     this.cache.set(notePath, p);
     if (!this.noteText.has(notePath)) this.snapshot(notePath);
     return p;
@@ -1110,14 +1176,20 @@ class PenInk extends Plugin {
   // new version. Bigger rewrites keep it hidden (it may not line up), with a way to bring it back.
 
   // Read the note's sections now (in line with the edits being followed, never in between).
-  snapshot(notePath) {
+  snapshot(notePath, retried = false) {
     const run = async () => {
       const file = this.app.vault.getAbstractFileByPath(notePath), mc = this.app.metadataCache;
       if (!(file instanceof TFile) || !mc || !mc.getCache || !this.app.vault.cachedRead) return;
       try {
         const text = await this.app.vault.cachedRead(file), meta = mc.getCache(notePath), secs = meta && meta.sections;
         // The index may lag behind the text for a moment: then its line numbers don't fit. Skip it.
-        if (!secs || secs.some(x => x.position && typeof x.position.end.offset === 'number' && x.position.end.offset > text.length)) return;
+        // (Every bit of text is in some section, so the last one ends where the text does.)
+        const ends = (secs || []).map(x => x.position && x.position.end.offset).filter(o => typeof o === 'number');
+        const end = ends.length ? Math.max(...ends) : -1, len = text.replace(/\s+$/, '').length;
+        if (!secs || (ends.length && (end > text.length || end < len))) {
+          if (!retried) window.setTimeout(() => this.snapshot(notePath, true), 1500);   // try once more when it's caught up
+          return;
+        }
         const out = noteSections(text, secs);
         if (out) this.noteText.set(notePath, out);
       } catch (e) { /* not readable right now: no snapshot */ }
@@ -1127,13 +1199,12 @@ class PenInk extends Plugin {
     return q;
   }
 
-  // Edited here: the note is open in a pane on this device (any mode: Obsidian can index an edit
-  // just after you switch to reading view). Edits to notes that aren't open, like ones arriving
-  // through Sync, are left alone: the device they were typed on moves the ink and syncs that.
+  // Edited here: the note is in the active pane on this device (any mode: Obsidian can index an edit
+  // just after you switch to reading view). Other edits, like ones arriving through Sync, are left
+  // alone: the device they were typed on moves the ink and syncs that.
   openHere(notePath) {
-    let open = false;
-    this.app.workspace.iterateAllLeaves(leaf => { const v = leaf.view; if (v instanceof MarkdownView && v.file && v.file.path === notePath) open = true; });
-    return open;
+    const v = this.app.workspace.getActiveViewOfType(MarkdownView);
+    return !!(v && v.file && v.file.path === notePath);
   }
 
   sawKey(notePath, key) {
@@ -1152,6 +1223,7 @@ class PenInk extends Plugin {
   }
 
   async followEdit(notePath, data, cache, local) {
+    if (!(this.app.vault.getAbstractFileByPath(notePath) instanceof TFile)) return;   // renamed or deleted meanwhile
     const before = this.noteText.get(notePath), hasInk = this.cache.has(notePath) || !!this.inkFile(this.dataPath(notePath));
     if (!before && !hasInk) return;   // nothing to follow: don't keep the text of every note around
     const after = noteSections(data, cache && cache.sections);
@@ -1162,6 +1234,7 @@ class PenInk extends Plugin {
     if (seen) for (const k of before.keys()) if (!after.has(k)) seen.delete(k);
     if (!hasInk || !local) return;
     const d = await this.loadInk(notePath);
+    if (this.cache.get(notePath) !== d) return;   // renamed while loading: the new name's edits take over
     const { moves, lost } = matchEdits(before, after, k => !!(d.sections[k] && d.sections[k].length));
     if (moves.length) {
       const retarget = (a, from, to) => { if (a.type === 'batch') a.items.forEach(i => retarget(i, from, to)); else if (a.path === notePath && a.key === from) a.key = to; };
@@ -1210,7 +1283,7 @@ class PenInk extends Plugin {
       b.addEventListener('click', () => {
         const v = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (v && v.file && v.file.path === notePath) this.recoverHidden(v, this.justHidden(notePath));
-        else new Notice('Open the note, then run "Pen Ink: Bring back hidden ink".');
+        else new Notice('Open the note, then run "Pen Ink: Bring back ink from rewritten paragraphs".');
       });
       content.append(b);
     }
@@ -1257,6 +1330,7 @@ class PenInk extends Plugin {
       return false;
     }
     this.saveInk(notePath);
+    if (this.hiddenNotice && this.hiddenNotice.notice.hide) this.hiddenNotice.notice.hide();
     new Notice(`Pen Ink brought back the ink from ${keys.length === 1 ? 'a paragraph' : keys.length + ' paragraphs'}. It's selected: drag it into place, or delete it.`);
     return true;
   }
@@ -1447,6 +1521,7 @@ class PenInk extends Plugin {
       await view.setState({ ...view.getState(), mode: 'preview' }, { history: false });
     }
     if (this.sessions.has(view)) return;
+    if (this.inkHidden) this.setInkHidden(false);   // you can't mark up ink you can't see
     const P = this.prefs;
     const root = view.contentEl;
     const st = { view, root, stroke: null, eraserId: null, lastErase: null, lastPenTime: 0, penDownAt: 0, tap: null, lasso: null, moving: null, hold: null, laserId: null, laserPts: [], laserDot: null, laserSeen: 0, laserRaf: 0, zoom: { s: 1, tx: 0, ty: 0 }, pinch: null };
@@ -1510,11 +1585,15 @@ class PenInk extends Plugin {
       const busy = st.stroke || st.eraserId != null || st.lasso || st.moving || st.shape || st.laserId != null;
       if (fingerOn() && !pen) {
         // Drawing with a finger: one finger is a pen (its pointer events draw). A second finger
-        // drops what the first one started and the two scroll and zoom together.
-        e.preventDefault();
+        // drops what the first one started and the two scroll and zoom together. Obsidian's own
+        // swipes (sidebar, pull-down) mustn't start from a drawing finger either.
+        e.preventDefault(); e.stopPropagation();
         this.stopGlide(st);
         this.trackTwoFingerTap(st, e);
         st.pan = null;
+        // A long stroke is on purpose: an accidental second touch (a palm) doesn't throw it away.
+        if (e.touches.length === 2 && st.stroke && st.stroke.pointerId === st.fingerId && Date.now() - st.stroke.t0 > 400) return;
+        if (e.touches.length >= 2) st.pendingFinger = null;   // that first touch was the start of a pinch or a two-finger tap
         if (e.touches.length === 2 && st.zoomEl) {
           this.dropFingerAction(st);
           const [a, b] = e.touches, m = [(a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2];
@@ -1522,7 +1601,7 @@ class PenInk extends Plugin {
         } else { if (e.touches.length > 2) this.dropFingerAction(st); st.pinch = null; }
         return;
       }
-      if (pen || busy) { st.tap = null; st.pinch = null; st.pan = null; e.preventDefault(); return; }
+      if (pen || busy) { if (pen) this.stopGlide(st); st.tap = null; st.pinch = null; st.pan = null; e.preventDefault(); return; }
       // Fingers: we scroll, pan and zoom ourselves while annotating. Once iOS's own scrolling
       // takes over a gesture it stops sending us touch moves, which made pinches right after a
       // scroll do nothing. So the page's built-in gesture never starts.
@@ -1541,7 +1620,7 @@ class PenInk extends Plugin {
     st.onTouchMove = (e) => {
       if (st.pinch && st.pinch.both && e.touches.length === 2) {
         // Two fingers while drawing with a finger: spread to zoom, move together to scroll.
-        e.preventDefault();
+        e.preventDefault(); e.stopPropagation();
         const [a, b] = e.touches, P0 = st.pinch, m = [(a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2];
         this.zoomAround(st, P0.s0 * Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / P0.d0, m[0], m[1]);
         this.panBy(st, m[0] - P0.last[0], m[1] - P0.last[1]);
@@ -1560,7 +1639,7 @@ class PenInk extends Plugin {
         P.x = t.clientX; P.y = t.clientY; P.t = now;
         P.moved = Math.max(P.moved, Math.hypot(t.clientX - P.x0, t.clientY - P.y0));
         this.panBy(st, dx, dy);
-      } else if (fingerOn() && !inToolbar(e) && reading()) e.preventDefault();   // the drawing finger mustn't scroll
+      } else if (fingerOn() && !inToolbar(e) && reading()) { e.preventDefault(); e.stopPropagation(); }   // the drawing finger mustn't scroll
       if (!st.tap) return;
       for (const t of e.changedTouches) {
         const s = st.tap.start[t.identifier];
@@ -1568,6 +1647,10 @@ class PenInk extends Plugin {
       }
     };
     st.onTouchEnd = (e) => {
+      if (fingerOn() && e.touches.length === 2 && st.zoomEl && !inToolbar(e)) {   // back to two fingers (a third lifted): keep scrolling
+        const [a, b] = e.touches;
+        st.pinch = { d0: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1, s0: st.zoom.s, last: [(a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2], both: true };
+      }
       if (e.touches.length < 2 && st.pinch) {
         st.pinch = null;
         if (st.zoom.s < 1.05) this.setZoom(st, 1, 0, 0);
@@ -1607,6 +1690,8 @@ class PenInk extends Plugin {
     st.onDown = (e) => {
       if (e.pointerType === 'pen' && !inToolbar(e)) {
         st.penDownAt = Date.now();
+        st.pendingFinger = null;
+        if (st.fingerId != null) this.dropFingerAction(st);   // a palm got there first: its marks go, the pen draws
         if (!st.penSeen) { st.penSeen = true; st.hand = false; if (st.toolbar) st.toolbar.paint(); }   // fingers scroll now anyway: no hand needed
       }
       // A pen's eraser end (button 5) or held side button (button 2) erases for that one stroke,
@@ -1614,6 +1699,14 @@ class PenInk extends Plugin {
       const penErase = e.pointerType === 'pen' && P.penButtonErases !== false && (e.button === 5 || e.button === 2 || (e.buttons & 34) > 0);
       if (!canDraw(e) || (e.button > 0 && !penErase) || inToolbar(e) || !reading()) return;
       if (st.stroke || st.eraserId != null || st.lasso || st.moving || st.shape || st.laserId != null) return;   // already busy with another pointer
+      // A finger only starts once it moves a little: until then it may be a tap (links, checkboxes
+      // keep working) or the first finger of a pinch (which must not draw, erase or select).
+      if (e.pointerType === 'touch' && !e.paReplay) {
+        e.preventDefault();
+        st.pendingFinger = { pointerId: e.pointerId, clientX: e.clientX, clientY: e.clientY, target: e.target, pressure: e.pressure, timeStamp: e.timeStamp };
+        return;
+      }
+      if (this.inkHidden) this.setInkHidden(false);   // drawing on ink you can't see: show it again
       const tool = penErase ? 'eraser' : P.tool;
       st.fingerId = e.pointerType === 'touch' ? e.pointerId : null;
       st.tempErase = penErase && P.tool !== 'eraser';
@@ -1632,6 +1725,7 @@ class PenInk extends Plugin {
 
       if (tool === 'lasso') {
         e.preventDefault();
+        if (st.fingerId != null) st.selBefore = [...this.selected];   // a finger: a pinch may still undo this
         st.lastPenTime = Date.now();
         st.toolbar.closePanel();
         try { root.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
@@ -1666,13 +1760,20 @@ class PenInk extends Plugin {
       const s = { kind: tool, color: opt.color, width: opt.size, opacity: tool === 'hl' ? HL_OPACITY : (opt.opacity || 1), pts: [] };
       if (tool === 'pen' && opt.type === 'fountain') s.type = 'fountain';
       else if (tool === 'pen' && ['dash', 'dot'].includes(opt.dash)) s.dash = opt.dash;
-      st.stroke = { el, rect, s, pointerId: e.pointerId, straight: tool === 'hl' && opt.straight, snapped: false, sm: null, raw: null };
+      st.stroke = { el, rect, s, t0: Date.now(), pointerId: e.pointerId, straight: tool === 'hl' && opt.straight, snapped: false, sm: null, raw: null };
       this.liveBegin(st.stroke);
       this.addPoint(st, e);
       if (P.holdToStraighten && !st.stroke.straight) armHold(e);
     };
 
     st.onMove = (e) => {
+      const F = st.pendingFinger;
+      if (F && e.pointerId === F.pointerId) {
+        e.preventDefault();
+        if (Math.hypot(e.clientX - F.clientX, e.clientY - F.clientY) < 6) return;
+        st.pendingFinger = null;
+        st.onDown({ ...F, pointerType: 'touch', isPrimary: true, button: 0, buttons: 1, paReplay: true, preventDefault() {} });
+      }
       // Eraser ring follows the Pencil (also while hovering, on iPads that support it).
       if ((P.tool === 'eraser' || (st.tempErase && st.eraserId === e.pointerId)) && canDraw(e) && !inToolbar(e)) showRing(e);
       // Laser: the dot follows the Pencil/mouse (also while hovering); a trail while pressed.
@@ -1711,7 +1812,23 @@ class PenInk extends Plugin {
     };
 
     st.onUp = (e) => {
-      if (e.pointerType === 'pen') hideRing();
+      // The system took over a finger (a back swipe, the notification pull): whatever it started goes.
+      if (e.type === 'pointercancel' && e.pointerType === 'touch') {
+        if (st.pendingFinger && st.pendingFinger.pointerId === e.pointerId) st.pendingFinger = null;
+        if (st.fingerId === e.pointerId) this.dropFingerAction(st);
+        return;
+      }
+      // A finger that never moved was a tap: let it press what's there (a link, a checkbox), or
+      // deselect with Select. Its touchstart was cancelled, so the page won't see a click by itself.
+      const F = st.pendingFinger;
+      if (F && e.pointerId === F.pointerId) {
+        st.pendingFinger = null;
+        if (P.tool === 'lasso' && this.selected.size && !this.handleAt(st, e.clientX, e.clientY)) { this.clearSelection(); return; }
+        this.fingerTap(e.clientX, e.clientY);
+        return;
+      }
+      if (e.pointerId === st.fingerId) st.fingerId = null;
+      if (e.pointerType === 'pen' || e.pointerType === 'touch') hideRing();
       if (st.laserId != null && e.pointerId === st.laserId) { st.laserId = null; st.lastPenTime = Date.now(); return; }
       if (st.lasso && e.pointerId === st.lasso.id) { st.lastPenTime = Date.now(); this.finishLasso(st); return; }
       if (st.shape && e.pointerId === st.shape.id) { st.lastPenTime = Date.now(); this.finishShape(st); return; }
@@ -1804,7 +1921,8 @@ class PenInk extends Plugin {
     r.removeEventListener('click', st.onClick, true);
     r.removeEventListener('contextmenu', st.onContext, true);
     r.removeEventListener('scroll', st.onScroll, true);
-    r.classList.remove('pa-annotating', 'pa-no-cursor', 'pa-zoomed', 'pa-cur-move', 'pa-cur-rotate', 'pa-cur-nwse', 'pa-cur-nesw');
+    r.classList.remove('pa-annotating', 'pa-no-cursor', 'pa-zoomed', 'pa-cur-move', 'pa-cur-rotate', 'pa-cur-nwse', 'pa-cur-nesw', 'pa-cur-tool', 'pa-cur-select');
+    cssVars(r, { '--pa-cursor': '' });
     if (st.zoomEl) { css(st.zoomEl, { transform: '' }); st.zoomEl.classList.remove('pa-zoom-target'); }   // back to 100%
     this.clearSelection();          // while the session still exists, so its halos get redrawn away
     this.sessions.delete(view);
@@ -1833,12 +1951,25 @@ class PenInk extends Plugin {
     } else if (st.shape && st.shape.id === id) {
       const el = st.shape.el; st.shape = null;
       if (el.paChild) { el.paChild.setLive(null); el.paChild.draw(); }
+    } else if (st.eraserId === id) {
+      // Put back what this finger erased; nothing to undo, and the tool stays the eraser.
+      const B = st.eraseBatch;
+      st.eraserId = null; st.eraseBatch = null;
+      if (B && B.items.length) this.applyChange(B, true);
+    } else if (st.lasso && st.lasso.id === id) {
+      st.lasso = null;
+      show(st.lassoBox, false);
+      st.lassoPath.setAttribute('d', '');
+      for (const s of st.selBefore || []) this.selected.add(s);   // the selection it cleared comes back
+      this.showSelection(st);
     } else if (st.onUp) st.onUp({ pointerId: id, pointerType: 'touch' });
+    st.selBefore = null;
+    if (st.hideRing) st.hideRing();
   }
 
   trackTwoFingerTap(st, e) {
     const now = Date.now();
-    if (e.touches.length === 1) st.tap = { t0: now, max: 1, cancelled: false, start: {} };
+    if (e.touches.length === e.changedTouches.length) st.tap = { t0: now, max: 1, cancelled: false, start: {} };   // all fingers new (two can land at once)
     if (!st.tap) return;
     for (const t of e.changedTouches) st.tap.start[t.identifier] = [t.clientX, t.clientY];
     st.tap.max = Math.max(st.tap.max, e.touches.length);
@@ -2176,6 +2307,25 @@ class PenInk extends Plugin {
       }
     }
     this.showSelection(st);
+  }
+
+  // Select every drawing of this note that's on the page. Obsidian only keeps the paragraphs near the
+  // screen loaded in long notes, hence "on screen" (in short notes that's all of it).
+  selectAll(st) {
+    const notePath = st.view.file && st.view.file.path, rr = st.root.getBoundingClientRect(), found = [];
+    for (const el of this.sections(st.root)) {
+      const r = el.getBoundingClientRect();
+      if (el.dataset.paPath !== notePath || r.bottom < rr.top || r.top > rr.bottom) continue;   // only what's on screen
+      found.push(...this.strokesFor(notePath, el.dataset.paKey));
+    }
+    if (!found.length) return 0;   // nothing to select: leave the tool alone
+    if (this.inkHidden) this.setInkHidden(false);
+    this.clearSelection();
+    for (const s of found) this.selected.add(s);
+    if (this.prefs.tool !== 'lasso') { this.prefs.tool = 'lasso'; this.savePrefs(); }
+    this.refreshToolbars();
+    this.showSelection(st);
+    return this.selected.size;
   }
 
   // Where each selected stroke lives: [{el, path, key, s}]
@@ -2760,7 +2910,7 @@ class PenInk extends Plugin {
     const orientIcon = h('span', 'pa-shape-icon');
     const orientBtn = button('Make toolbar vertical', orientIcon, () => {
       P.barVertical = !P.barVertical;
-      applyOrientation(); place(); this.savePrefs();
+      closeFavPop(); applyOrientation(); place(); this.savePrefs();
     }, 'pa-btn-orient');
 
     const grip = h('div', 'pa-grip', svgIcon(ICONS.grip, 18, 3));
@@ -2820,12 +2970,15 @@ class PenInk extends Plugin {
     const place = () => {
       if (!bar.isConnected) return;
       const r = area(!drag);
+      if (!drag) css(bar, { left: '', top: '' });   // measure from the corner, not squeezed against an edge
       const V = !!P.barVertical;
       const rowMax = (V ? r.height : r.width) - 2 * M;
       // Too long for the screen? First fold the favorites into one star button, then make the buttons
       // a little smaller. Only if it still doesn't fit, wrap onto a 2nd column / row. Phones always
       // get the folded, smaller bar: the full one fits but covers most of the screen.
-      css(row, { maxHeight: '', maxWidth: '', flexWrap: 'nowrap' });
+      if (drag) return placeAt(bar, Math.round(r.left + M + P.barPos.x * Math.max(0, r.width - bar.offsetWidth - 2 * M)), Math.round(r.top + M + P.barPos.y * Math.max(0, r.height - bar.offsetHeight - 2 * M)));   // mid-drag: just move it
+      css(row, { maxHeight: '', maxWidth: '' });
+      row.classList.add('pa-measuring');   // one line, to measure its full length
       const length = () => (V ? row.scrollHeight : row.scrollWidth);
       const fold = (yes) => {
         yes = yes && P.favorites.length > 0;
@@ -2837,7 +2990,7 @@ class PenInk extends Plugin {
       fold(phone); bar.classList.toggle('is-compact', phone);
       if (length() > rowMax) fold(true);
       if (length() > rowMax) bar.classList.add('is-compact');
-      css(row, { flexWrap: '' });
+      row.classList.remove('pa-measuring');
       css(row, V ? { maxHeight: Math.max(200, rowMax) + 'px', maxWidth: '' } : { maxWidth: Math.max(200, rowMax) + 'px', maxHeight: '' });
       const at = P.barPos || homeOf();   // pop the favorites out toward the open side
       favPop.classList.toggle('is-up', at.y > 0.5);
@@ -2881,12 +3034,13 @@ class PenInk extends Plugin {
         const now = Date.now();
         if (now - lastGripTap < 350) { P.barPos = null; place(); lastGripTap = 0; }   // double-tap: back home
         else lastGripTap = now;
-      }
+      } else place();   // settled: fit it and point its cards toward the open side
       this.savePrefs();
     };
     grip.addEventListener('pointerup', endDrag);
     grip.addEventListener('pointercancel', endDrag);
-    const ro = new ResizeObserver(() => place());   // keep it on screen when the pane resizes
+    let roFrame = 0;   // keep it on screen when the pane resizes (once per frame, it measures a lot)
+    const ro = new ResizeObserver(() => { if (!roFrame) roFrame = window.requestAnimationFrame(() => { roFrame = 0; place(); }); });
     ro.observe(st.root);
 
     // ----- selection: dashed box + a small menu (recolor / style / duplicate / layers / delete) -----
@@ -2973,6 +3127,7 @@ class PenInk extends Plugin {
       const rr = st.root.getBoundingClientRect(), mw = selMenu.offsetWidth, mh = selMenu.offsetHeight;
       let my = rect.top - mh - 8;
       if (my < rr.top + 4) my = rect.bottom + KNOB_GAP + 18;           // no room above: below, clear of the rotate knob
+      my = Math.max(rr.top + 4, Math.min(my, rr.bottom - mh - 4));     // a selection taller than the screen: keep the menu on it
       const mx = Math.max(rr.left + 4, Math.min(rect.left, rr.right - mw - 4));
       css(selMenu, { maxWidth: (rr.width - 8) + 'px' });
       placeAt(selMenu, mx, my);
@@ -2996,6 +3151,8 @@ class PenInk extends Plugin {
     let painters = [];
 
     const paint = () => {
+      const shown = () => [zoomBtn, pasteBtn, handBtn].map(b => b.classList.contains('pa-hidden')).join();
+      const was = shown();
       buildFavorites();
       const hand = fingerMode() && st.hand;
       show(handBtn, fingerMode());
@@ -3026,9 +3183,16 @@ class PenInk extends Plugin {
       redoBtn.classList.toggle('is-dim', this.lastFor(this.redoStack, notePath()) < 0);
       if (P.tool !== 'eraser') st.hideRing();
       if (P.tool !== 'laser') { st.laserPts = []; st.laserDot = null; }
-      st.root.classList.toggle('pa-no-cursor', P.tool === 'laser' || P.tool === 'eraser');   // the ring / dot is the pointer
+      st.root.classList.toggle('pa-no-cursor', P.tool === 'laser');   // the red dot is the pointer
+      // Pen and highlighter: a pointer shaped like the tool, in its color; the eraser: a pink eraser
+      // (its ring still shows how much it takes). Select: a plain arrow.
+      const toolCursor = P.tool === 'pen' || P.tool === 'hl' || P.tool === 'eraser';
+      st.root.classList.toggle('pa-cur-tool', toolCursor);
+      st.root.classList.toggle('pa-cur-select', P.tool === 'lasso');
+      if (toolCursor) cssVars(st.root, { '--pa-cursor': cursorFor(P.tool, P.tool === 'eraser' ? '' : P[P.tool].color) });
       if (panelOpen()) for (const f of painters) f();
       if (selCardOpen()) for (const f of selPainters) f();
+      if (shown() !== was && bar.isConnected) place();   // a button came or went: it may (not) fit now
     };
 
     const closePanel = () => { closeFavPop(); if (panelOpen()) { show(panel, false); paint(); } };
@@ -3191,6 +3355,7 @@ class PenInk extends Plugin {
     };
 
     const pickTool = (tool) => {
+      closeFavPop();
       if (st.hand) { st.hand = false; if (P.tool === tool) { paint(); return; } }   // back to drawing
       if (P.tool === tool) { togglePanel(); return; }   // tap the active tool again = its options
       P.tool = tool;

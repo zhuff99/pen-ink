@@ -15,7 +15,7 @@ and is saved in its own file, so the Markdown underneath stays exactly as you wr
 
 It's made for the iPad and Apple Pencil, and it works just as well with a mouse or another pen on desktop.
 
-**New in 1.16:** draw with a finger on your phone. **1.15:** ink follows your edits, and ink from a rewritten
+**New in 1.17:** hide your ink for a moment, and select all ink at once. **1.16:** draw with a finger on your phone. **1.15:** ink follows your edits, and ink from a rewritten
 paragraph can be brought back.
 [See what's new](https://github.com/zhuff99/pen-ink/blob/main/CHANGELOG.md)
 
@@ -47,6 +47,7 @@ look like they belong in a notebook, not a slide deck.
 Draw a loop around any ink to pick it up. Then move it, resize it from a corner, turn it with the rotate knob, change
 its color, restyle its width, line, fill or edges, duplicate it, bring it to the front, send it back, or delete it.
 **Copy** it and **paste** it anywhere, in the same note or another one (Cmd/Ctrl + C, X and V work on a Mac too).
+To grab everything at once, run **Pen Ink: Select all ink on screen** (or press Cmd/Ctrl + A while marking up).
 
 ## At home on the iPad
 
@@ -70,7 +71,9 @@ vault, for example `Annotations/Biology/Photosynthesis.json` for `Biology/Photos
 - Rename or move a note and its ink moves with it.
 - Ink is pinned to the paragraph you drew on, so it stays put when you scroll or when other parts of the note change.
 - Edit a paragraph (fix a typo, add a sentence) and its ink stays with it. Rewrite it completely and the ink is
-  hidden, never deleted: tap **Bring it back** on the notice, or run **Pen Ink: Bring back hidden ink**.
+  hidden, never deleted: tap **Bring it back** on the notice, or run **Pen Ink: Bring back ink from rewritten paragraphs**.
+- Want the clean note back for a moment? **Pen Ink: Hide or show ink** hides every drawing without deleting
+  anything. Run it again, start marking up, or restart Obsidian and it's back.
 - No network requests, no telemetry, no dependencies. It's one plain JavaScript file you can read end to end.
 
 ## Getting started
