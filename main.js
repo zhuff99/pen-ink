@@ -2696,6 +2696,17 @@ class PenInk extends Plugin {
     const favRow = h('div', 'pa-favs');
     const sep = () => h('span', 'pa-sep');
     const favSep = sep();
+    // When the toolbar doesn't fit in one line (phones), the favorites fold into one star button that
+    // pops them out beside it.
+    const favPop = h('div', 'pa-favpop pa-card pa-hidden');
+    const favPopOpen = () => !favPop.classList.contains('pa-hidden');
+    const closeFavPop = () => { if (favPopOpen()) { show(favPop, false); active(starBtn, false); } };
+    const starBtn = button('Favorites', svgIcon(ICONS.star), () => {
+      const open = !favPopOpen();
+      if (open) closePanel();
+      show(favPop, open); active(starBtn, open);
+    });
+    const favBox = h('span', 'pa-favbox pa-hidden', starBtn, favPop);
     let favKey = null, favBtns = [];
     const favMatches = (f) => P.tool === f.tool && P[f.tool].color === f.color && P[f.tool].size === f.size &&
       (f.tool !== 'pen' || ((P.pen.type || 'ball') === f.type && (P.pen.dash || 'solid') === (f.dash || 'solid')));
@@ -2717,7 +2728,7 @@ class PenInk extends Plugin {
       P[f.tool].color = f.color; P[f.tool].size = f.size;
       if (f.tool === 'pen') { P.pen.type = f.type; P.pen.dash = f.dash || 'solid'; }
       this.clearSelection();
-      closePanel(); paint(); this.savePrefs();
+      closeFavPop(); closePanel(); paint(); this.savePrefs();
     };
     const buildFavorites = () => {
       const key = JSON.stringify(P.favorites);
@@ -2732,6 +2743,7 @@ class PenInk extends Plugin {
       favRow.replaceChildren(...favBtns);
       show(favSep, P.favorites.length > 0);
       show(favRow, P.favorites.length > 0);
+      if (bar.isConnected) place();   // more or fewer favorites: they may (not) fit anymore
     };
 
     // Options button: a "settings" sliders icon with a dot in the current color.
@@ -2755,7 +2767,7 @@ class PenInk extends Plugin {
     grip.setAttribute('aria-label', 'Move toolbar (double-tap to reset)');
     grip.setAttribute('title', 'Drag to move. Double-tap to put it back.');
 
-    row.append(grip, orientBtn, handBtn, tools.pen, tools.hl, tools.shape, tools.eraser, tools.lasso, pasteBtn, tools.laser, zoomBtn, favSep, favRow, sep(), styleBtn, sep(), undoBtn, redoBtn, doneBtn);
+    row.append(grip, orientBtn, handBtn, tools.pen, tools.hl, tools.shape, tools.eraser, tools.lasso, pasteBtn, tools.laser, zoomBtn, favSep, favRow, favBox, sep(), styleBtn, sep(), undoBtn, redoBtn, doneBtn);
 
     // Vertical column along the side of the page (default), or a horizontal row.
     const applyOrientation = () => {
@@ -2771,13 +2783,65 @@ class PenInk extends Plugin {
     const M = 8;   // gap kept between the toolbar and the edges of the note area
     // Where it sits until you drag it: a column on the left side, or a row at the top right.
     const homeOf = () => (P.barVertical ? { x: 0, y: 0 } : { x: 1, y: 0 });
+    // Where the toolbar may go: the note, minus Obsidian's buttons that float over it (on phones the
+    // sidebar button, the top-right buttons and the bottom bar sit on top of the note). Found by
+    // asking what's on top at points along the top and bottom edges, so it works whatever they're called.
+    const chromeInsets = () => {
+      const r = st.root.getBoundingClientRect(), doc = st.root.ownerDocument || activeDocument;
+      if (!doc.elementsFromPoint || !r.width || !r.height) return { top: 0, bottom: 0 };
+      // Passing things (notices, menus, tooltips, popups) don't count.
+      const passing = '.notice-container, .menu, .tooltip, .popover, .modal-container, .suggestion-container';
+      const mine = '.pa-toolbar, .pa-ui, .pa-card, .pa-selbox, .pa-ring, .pa-laser, .pa-lasso';   // Pen Ink's own, see through it
+      const covered = (x, y) => {
+        const el = doc.elementsFromPoint(x, y).find(e => !(e.closest && e.closest(passing + ', ' + mine)));
+        return !!el && !st.root.contains(el) && !el.contains(st.root);
+      };
+      // Phones float these up to ~100px in from the edge (below the status bar), so look that far.
+      const xs = [0.03, 0.15, 0.5, 0.85, 0.97].map(f => r.left + f * r.width), limit = Math.min(160, r.height * 0.3);
+      const scan = (from, dir) => {
+        let inset = 0;
+        for (const x of xs) {
+          let deepest = 0, all = true;
+          for (let d = 2; d < limit; d += 5) { if (covered(x, from + dir * d)) deepest = d + 6; else all = false; }
+          if (!all) inset = Math.max(inset, deepest);   // covered all the way: a sidebar sliding over, not a button
+        }
+        return inset;
+      };
+      return { top: scan(r.top, 1), bottom: scan(r.bottom, -1) };
+    };
+    // The note's box minus those buttons. Measured again whenever the toolbar is placed, except
+    // mid-drag (then the last measure is reused).
+    const area = (fresh) => {
+      const r = st.root.getBoundingClientRect();
+      if (fresh || !st.chrome) st.chrome = chromeInsets();
+      const C = st.chrome;
+      return { left: r.left, top: r.top + C.top, width: r.width, height: Math.max(120, r.height - C.top - C.bottom) };
+    };
     const place = () => {
       if (!bar.isConnected) return;
-      const r = st.root.getBoundingClientRect();
+      const r = area(!drag);
       const V = !!P.barVertical;
-      // Too long for the screen? Wrap onto a 2nd row (horizontal) or a 2nd column (vertical).
       const rowMax = (V ? r.height : r.width) - 2 * M;
+      // Too long for the screen? First fold the favorites into one star button, then make the buttons
+      // a little smaller. Only if it still doesn't fit, wrap onto a 2nd column / row. Phones always
+      // get the folded, smaller bar: the full one fits but covers most of the screen.
+      css(row, { maxHeight: '', maxWidth: '', flexWrap: 'nowrap' });
+      const length = () => (V ? row.scrollHeight : row.scrollWidth);
+      const fold = (yes) => {
+        yes = yes && P.favorites.length > 0;
+        if (yes === !favBox.classList.contains('pa-hidden')) return;
+        if (yes) favPop.appendChild(favRow); else { closeFavPop(); favBox.before(favRow); }
+        show(favBox, yes);
+      };
+      const phone = !!Platform.isPhone;
+      fold(phone); bar.classList.toggle('is-compact', phone);
+      if (length() > rowMax) fold(true);
+      if (length() > rowMax) bar.classList.add('is-compact');
+      css(row, { flexWrap: '' });
       css(row, V ? { maxHeight: Math.max(200, rowMax) + 'px', maxWidth: '' } : { maxWidth: Math.max(200, rowMax) + 'px', maxHeight: '' });
+      const at = P.barPos || homeOf();   // pop the favorites out toward the open side
+      favPop.classList.toggle('is-up', at.y > 0.5);
+      favPop.classList.toggle('is-left', at.x > 0.5);
       const maxX = Math.max(0, r.width - bar.offsetWidth - 2 * M), maxY = Math.max(0, r.height - bar.offsetHeight - 2 * M);
       const pos = P.barPos || homeOf();
       placeAt(bar, Math.round(r.left + M + pos.x * maxX), Math.round(r.top + M + pos.y * maxY));
@@ -2801,7 +2865,7 @@ class PenInk extends Plugin {
       e.stopPropagation(); e.preventDefault();
       if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4) return;
       drag.moved = true;
-      const r = st.root.getBoundingClientRect();
+      const r = area(false);
       const maxX = Math.max(1, r.width - bar.offsetWidth - 2 * M), maxY = Math.max(1, r.height - bar.offsetHeight - 2 * M);
       const clamp = (v) => Math.max(0, Math.min(1, v));
       P.barPos = { x: clamp((e.clientX - drag.dx - r.left - M) / maxX), y: clamp((e.clientY - drag.dy - r.top - M) / maxY) };
@@ -2937,7 +3001,7 @@ class PenInk extends Plugin {
       show(handBtn, fingerMode());
       active(handBtn, hand);
       for (const k in tools) active(tools[k], k === P.tool && !hand);
-      for (const b of favBtns) active(b, favMatches(b.paFav));
+      for (const b of favBtns) active(b, favMatches(b.paFav) && !(fingerMode() && st.hand));
       cssVars(penBar, { '--pa-c': P.pen.color });
       cssVars(hlBar, { '--pa-c': P.hl.color });
       cssVars(shapeBar, { '--pa-c': P.shape.color });
@@ -2967,8 +3031,9 @@ class PenInk extends Plugin {
       if (selCardOpen()) for (const f of selPainters) f();
     };
 
-    const closePanel = () => { if (panelOpen()) { show(panel, false); paint(); } };
+    const closePanel = () => { closeFavPop(); if (panelOpen()) { show(panel, false); paint(); } };
     const togglePanel = () => {
+      closeFavPop();
       if (panelOpen() || P.tool === 'lasso' || P.tool === 'laser') { closePanel(); return; }
       painters = P.tool === 'eraser' ? buildEraserPanel() : buildInkPanel();
       show(panel, true);

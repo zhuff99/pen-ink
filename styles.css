@@ -162,6 +162,22 @@
 .pa-toolbar.is-vertical .pa-btn-orient:not(#pa-x) { width: 44px; height: 30px; }
 .pa-ui .pa-btn-round:not(#pa-x) { width: 32px; height: 32px; border-radius: 50%; }
 
+/* Not enough room (phones): favorites fold into a star button that pops them out beside it... */
+.pa-favbox { position: relative; display: flex; flex: none; }
+.pa-favpop { position: absolute; z-index: 1; display: flex; padding: 4px; border-radius: 14px; top: calc(100% + 8px); left: 0; }
+.pa-favpop.is-up { top: auto; bottom: calc(100% + 8px); }
+.pa-favpop.is-left { left: auto; right: 0; }
+.pa-toolbar.is-vertical .pa-favpop { top: 0; left: calc(100% + 8px); }
+.pa-toolbar.is-vertical .pa-favpop.is-up { top: auto; bottom: 0; }
+.pa-toolbar.is-vertical .pa-favpop.is-left { left: auto; right: calc(100% + 8px); }
+/* ...and if that's still too long, the buttons get a little smaller. */
+.pa-toolbar.is-compact > .pa-row > .pa-btn:not(.pa-btn-done):not(#pa-x),
+.pa-toolbar.is-compact .pa-favbox > .pa-btn:not(#pa-x),
+.pa-toolbar.is-compact .pa-favs > .pa-btn:not(#pa-x) { width: 38px; height: 38px; }
+.pa-toolbar.is-compact.is-vertical .pa-btn-orient:not(.pa-btn-done):not(#pa-x) { width: 38px; height: 26px; }
+.pa-toolbar.is-compact.is-vertical .pa-grip { width: 38px; height: 20px; }
+.pa-toolbar.is-compact.is-vertical .pa-btn-done:not(#pa-x) { width: 36px; height: 36px; }
+
 .pa-ui .pa-btn-text:not(#pa-x) {
   gap: 6px; width: auto; height: 34px; padding: 0 12px; border-radius: 8px;
   font-size: 13px; font-weight: 600; white-space: nowrap;

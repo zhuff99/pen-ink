@@ -2,6 +2,15 @@
 
 Newest first. Updates arrive through **Settings → Community plugins → Check for updates**.
 
+## 1.16.1
+
+- On phones, the toolbar no longer hides under Obsidian's floating buttons (the sidebar button at the top and the
+  bar at the bottom). It now sits between them, so every button can be tapped.
+- A shorter toolbar on phones: your favorites fold into a star button that pops them out, and the buttons are a
+  little smaller. On any screen where the toolbar is too long, it does the same instead of wrapping into a second
+  column.
+- With the hand on, a favorite no longer also shows as active.
+
 ## 1.16.0
 
 - **Draw with a finger.** No stylus needed: on phones one finger draws, and two fingers scroll and pinch to zoom. A

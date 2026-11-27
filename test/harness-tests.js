@@ -1435,7 +1435,14 @@
       const hand = bar().querySelector('[aria-label="Scroll"]'), penB = bar().querySelector('[aria-label="Pen"]');
       const tap = (b) => { b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 61, pointerType: 'touch', isPrimary: true })); b.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 61, pointerType: 'touch', isPrimary: true })); };
       check('hand: shown while drawing with a finger', hand && vis(hand) && !hand.classList.contains('is-active'));
+      const favs0 = plugin.prefs.favorites, P0 = plugin.prefs.pen;
+      plugin.prefs.favorites = [{ tool: 'pen', color: P0.color, size: P0.size, type: P0.type || 'ball', dash: P0.dash || 'solid' }];
+      plugin.refreshToolbars();
+      const favOn = () => [...bar().querySelectorAll('[aria-label^="Favorite "]')].some(b => b.classList.contains('is-active'));
+      check('hand: (a favorite matching the pen shows as in use)', favOn());
       tap(hand);
+      check('hand: nothing else looks active while it\'s on (not even a favorite)', !favOn());
+      plugin.prefs.favorites = favs0; plugin.refreshToolbars();
       check('hand: tapping it makes it the active button (and the pen not)', hand.classList.contains('is-active') && !penB.classList.contains('is-active'));
       n = plugin.undoStack.length;
       const t2 = sc.scrollTop;
@@ -1456,6 +1463,72 @@
       check('hand: hidden once a pen is used (fingers scroll anyway)', !vis(bar().querySelector('[aria-label="Scroll"]')));
       plugin.prefs.fingerDraws = null;
       sc.scrollTop = top0;
+    }
+
+    // ===== the toolbar stays clear of Obsidian's floating buttons (phone layout) =====
+    {
+      const st = plugin.sessions.get(view), root = view.contentEl, r = root.getBoundingClientRect();
+      const box = (x, y, w, h, cls) => { const d = document.createElement('div'); if (cls) d.className = cls; d.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:#8888;border-radius:24px;z-index:50`; document.body.appendChild(d); return d; };
+      // Like a phone: the buttons float a little in from the edges (below the status bar).
+      const side = box(r.left + 4, r.top + 44, 52, 52), pill = box(r.right - 150, r.top + 44, 144, 52), nav = box(r.left + 40, r.bottom - 64, r.width - 80, 56);
+      const free = (el) => { const b = el.getBoundingClientRect(), t = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!t && bar().contains(t); };
+      const saved = { v: plugin.prefs.barVertical, pos: plugin.prefs.barPos };
+      plugin.prefs.barPos = null;
+      for (const vertical of [true, false]) {
+        plugin.prefs.barVertical = vertical; bar().classList.toggle('is-vertical', vertical); st.toolbar.place(); await sleep(30);
+        const b = bar().getBoundingClientRect(), btns = [...bar().querySelectorAll('.pa-btn, .pa-grip')].filter(x => vis(x) && x.getBoundingClientRect().width > 0);
+        check(`toolbar (${vertical ? 'column' : 'row'}) starts below floating top buttons`, b.top >= r.top + 96, [b.top, r.top + 96]);
+        check(`…ends above a floating bottom bar`, b.bottom <= r.bottom - 64, [b.bottom, r.bottom - 64]);
+        check(`…and none of its buttons are covered`, btns.length > 5 && btns.every(free), btns.filter(x => !free(x)).map(x => x.getAttribute('aria-label') || x.className));
+      }
+      // Dragged to the very bottom: still above the bottom bar.
+      plugin.prefs.barVertical = true; bar().classList.add('is-vertical'); plugin.prefs.barPos = { x: 0, y: 1 }; st.toolbar.place(); await sleep(30);
+      check('…also when moved to the bottom', bar().getBoundingClientRect().bottom <= r.bottom - 64, bar().getBoundingClientRect().bottom);
+      // A notice passing by doesn't push the toolbar around.
+      side.remove(); pill.remove(); nav.remove();
+      plugin.prefs.barPos = null;
+      const note = box(r.left, r.top, 300, 80, 'notice-container');
+      st.toolbar.place(); await sleep(30);
+      check('…a notice on top doesn\'t move it', Math.abs(bar().getBoundingClientRect().top - (r.top + 8)) < 6, bar().getBoundingClientRect().top - r.top);
+      note.remove();
+      plugin.prefs.barVertical = saved.v; bar().classList.toggle('is-vertical', !!saved.v); plugin.prefs.barPos = saved.pos; st.toolbar.place();
+    }
+
+    // ===== a toolbar too long for the screen: favorites fold into a star, then buttons shrink =====
+    {
+      const st = plugin.sessions.get(view), root = view.contentEl;
+      const saved = { v: plugin.prefs.barVertical, pos: plugin.prefs.barPos, favs: plugin.prefs.favorites, h: root.style.height };
+      plugin.prefs.barVertical = true; plugin.prefs.barPos = null; bar().classList.add('is-vertical');
+      plugin.prefs.favorites = [{ tool: 'pen', color: '#e03131', size: 2.5, type: 'ball' }, { tool: 'hl', color: '#ffd400', size: 16 }, { tool: 'pen', color: '#1c7ed6', size: 2.5, type: 'ball' }];
+      plugin.refreshToolbars(); st.toolbar.place(); await sleep(30);
+      const star = () => bar().querySelector('[aria-label="Favorites"]'), favIn = (sel) => bar().querySelectorAll(sel + ' [aria-label^="Favorite "]').length;
+      const shown = (el) => !!el && el.getBoundingClientRect().width > 0;   // takes up space (no hidden parent)
+      const oneColumn = () => bar().getBoundingClientRect().width < 60;
+      check('fit: with room, favorites show in the bar (no star)', !shown(star()) && favIn('.pa-row > .pa-favs') === 3 && !bar().classList.contains('is-compact') && oneColumn());
+      const set = async (px) => { root.style.height = px + 'px'; st.toolbar.place(); await sleep(30); };
+      await set(700);
+      const b1 = bar().getBoundingClientRect();
+      check('fit: short screen, favorites fold into a star, still one column', shown(star()) && favIn('.pa-favpop') === 3 && oneColumn(), [shown(star()), favIn('.pa-favpop'), b1.width]);
+      check('…and the bar fits', b1.bottom <= root.getBoundingClientRect().bottom, [b1.bottom, root.getBoundingClientRect().bottom]);
+      const tap = (b) => { b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); b.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); };
+      tap(star());
+      const pop = bar().querySelector('.pa-favpop');
+      check('fit: tapping the star shows the favorites beside it', shown(pop) && pop.getBoundingClientRect().left >= bar().querySelector('.pa-row').getBoundingClientRect().right);
+      tap(pop.querySelectorAll('[aria-label^="Favorite "]')[2]);
+      check('…picking one uses it and closes the star', plugin.prefs.tool === 'pen' && plugin.prefs.pen.color === '#1c7ed6' && !shown(pop));
+      await set(560);
+      check('fit: shorter still, buttons get a little smaller (one column)', bar().classList.contains('is-compact') && oneColumn() && bar().getBoundingClientRect().bottom <= root.getBoundingClientRect().bottom, [bar().className, bar().getBoundingClientRect().width]);
+      await set(300);
+      check('fit: far too short, it wraps as a last resort (nothing cut off)', bar().getBoundingClientRect().bottom <= root.getBoundingClientRect().bottom + 1 && !oneColumn());
+      root.style.height = saved.h; plugin.prefs.favorites = saved.favs; plugin.refreshToolbars(); st.toolbar.place(); await sleep(30);
+      check('fit: room again, favorites go back into the bar', !shown(star()) && !bar().classList.contains('is-compact'));
+      // Phones: always the folded, smaller bar, even when the full one would fit.
+      window.__pi.O.Platform.isPhone = true; plugin.prefs.favorites = [{ tool: 'pen', color: '#e03131', size: 2.5, type: 'ball' }];
+      plugin.refreshToolbars(); st.toolbar.place(); await sleep(30);
+      check('fit: on a phone the favorites fold and buttons are smaller, even with room', shown(star()) && bar().classList.contains('is-compact') && oneColumn());
+      window.__pi.O.Platform.isPhone = false; plugin.prefs.favorites = saved.favs; plugin.refreshToolbars(); st.toolbar.place(); await sleep(30);
+      check('fit: …but not on a tablet', !shown(star()) && !bar().classList.contains('is-compact'));
+      plugin.prefs.barVertical = saved.v; bar().classList.toggle('is-vertical', !!saved.v); plugin.prefs.barPos = saved.pos; st.toolbar.place();
     }
 
     // 11. Done removes the toolbar.
